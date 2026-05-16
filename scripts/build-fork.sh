@@ -9,6 +9,12 @@ echo "========================================"
 echo "Fork 构建（BASE_PATH 默认 /mmw）"
 echo "========================================"
 
+if [ ! -f "$ROOT/.env" ]; then
+  echo ""
+  echo "提示: 未找到 .env，将使用 Vite 内置默认 VITE_BASE_PATH=/mmw/"
+  echo "      自定义子路径请: cp .env.example .env  并修改 BASE_PATH / VITE_BASE_PATH"
+fi
+
 BUILD_DIR="build/fork"
 FRONTEND_DIR="miaomiaowu"
 
@@ -30,4 +36,4 @@ echo "后端构建完成 ✓"
 
 echo ""
 echo "输出: ${BUILD_DIR}/forkserver"
-echo "默认 BASE_PATH=/mmw，Nginx 使用 location /mmw/"
+echo "配置: 见 .env.example（cp 为 .env 后生效）；默认 BASE_PATH=/mmw，Nginx location /mmw/"

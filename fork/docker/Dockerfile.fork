@@ -6,6 +6,8 @@ COPY miaomiaowu/package*.json ./miaomiaowu/
 WORKDIR /app/miaomiaowu
 RUN npm ci
 COPY miaomiaowu/ ./
+# 构建期注入 VITE_BASE_PATH（与 .env.example 默认 /mmw/ 一致；自定义请先 cp .env.example .env 并修改后构建）
+COPY .env.example .env
 RUN npx vite build --config vite.config.fork.mts
 
 FROM golang:1.24-bookworm AS backend-builder

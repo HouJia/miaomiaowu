@@ -14,7 +14,10 @@ services:
       # Container Station「浏览」只按端口生成 URL，不含应用子路径；访问根路径 / 会自动 302 到 /mmw/
       mmw.base-path: "/mmw"
       mmw.public-url: "http://<NAS_IP>:8080/mmw/"
-    # 可选覆盖：
+    # 可选：cp .env.example .env 后取消注释，与本地构建配置一致
+    # env_file:
+    #   - ../../.env
+    # 或直接覆盖：
     # environment:
     #   - BASE_PATH=/mmw
     #   - PUBLIC_ORIGIN=https://你的公网域名
