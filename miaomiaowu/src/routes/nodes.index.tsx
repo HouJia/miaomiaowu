@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { Topbar } from '@/components/layout/topbar'
 import { useAuthStore } from '@/stores/auth-store'
 import { api } from '@/lib/api'
+import { absoluteURL } from '@/lib/paths'
 import { cn } from '@/lib/utils'
 
 const CLASH_DRAFT_KEY_PREFIX = 'mmw_clash_config_draft_'
@@ -1863,7 +1864,7 @@ function NodesPage() {
         expire_seconds: tempSubExpireSeconds,
       })
 
-      const fullUrl = `${window.location.origin}${response.data.url}`
+      const fullUrl = absoluteURL(response.data.url)
       setTempSubUrl(fullUrl)
     } catch (error: any) {
       toast.error(error.response?.data?.error || '生成临时订阅失败')

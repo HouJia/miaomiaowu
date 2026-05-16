@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"miaomiaowu/internal/publicpath"
 	"miaomiaowu/internal/util"
 
 	"gopkg.in/yaml.v3"
@@ -177,7 +178,7 @@ func (h *TempSubscriptionHandler) handleCreate(w http.ResponseWriter, r *http.Re
 
 	resp := CreateTempSubResponse{
 		ID:        sub.ID,
-		URL:       "/t/" + sub.ID,
+		URL:       publicpath.Join("t", sub.ID),
 		MaxAccess: sub.MaxAccess,
 		ExpireAt:  sub.ExpireAt,
 	}

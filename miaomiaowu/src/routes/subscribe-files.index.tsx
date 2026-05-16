@@ -7,6 +7,7 @@ import { toast } from 'sonner'
 import { format, addDays, isPast, differenceInCalendarDays, isToday } from 'date-fns'
 import { useAuthStore } from '@/stores/auth-store'
 import { api } from '@/lib/api'
+import { absoluteURL } from '@/lib/paths'
 import { handleServerError } from '@/lib/handle-server-error'
 import { useMediaQuery } from '@/hooks/use-media-query'
 import { DataTable } from '@/components/data-table'
@@ -1227,10 +1228,9 @@ function SubscribeFilesPage() {
       config.url = selectedExternalSub.url
     } else {
       // 妙妙屋处理模式，URL 指向后端接口
-      const baseUrl = typeof window !== 'undefined' ? window.location.origin : '{妙妙屋地址}'
       // 编辑模式使用实际 ID，新建模式使用占位符
       const configId = editingProxyProvider?.id || '{config_id}'
-      config.url = `${baseUrl}/api/proxy-provider/${configId}?token=${userToken || '{user_token}'}`
+      config.url = absoluteURL(`/api/proxy-provider/${configId}?token=${userToken || '{user_token}'}`)
     }
 
     // 下载代理
@@ -2257,11 +2257,10 @@ function SubscribeFilesPage() {
       if (nonMmwProviders.length > 0) {
         const providers: Record<string, any> = {}
         nonMmwProviders.forEach(config => {
-          const baseUrl = window.location.origin
           const providerConfig: Record<string, any> = {
             type: config.type || 'http',
             path: `./proxy_providers/${config.name}.yaml`,
-            url: `${baseUrl}/api/proxy-provider/${config.id}?token=${userToken}`,
+            url: absoluteURL(`/api/proxy-provider/${config.id}?token=${userToken}`),
             interval: config.interval || 3600,
           }
           if (config.health_check_enabled) {
@@ -4710,8 +4709,7 @@ function SubscribeFilesPage() {
                                     if (isClientMode) {
                                       yamlConfig.url = sub.url
                                     } else {
-                                      const baseUrl = typeof window !== 'undefined' ? window.location.origin : ''
-                                      yamlConfig.url = `${baseUrl}/api/proxy-provider/${config.id}?token=${userToken}`
+                                      yamlConfig.url = absoluteURL(`/api/proxy-provider/${config.id}?token=${userToken}`)
                                     }
                                     if (config.proxy && config.proxy !== 'DIRECT') {
                                       yamlConfig.proxy = config.proxy
@@ -5478,9 +5476,8 @@ function SubscribeFilesPage() {
                       <div className='flex items-center gap-2'>
                         <Input
                           value={(() => {
-                            const baseUrl = typeof window !== 'undefined' ? window.location.origin : ''
                             const configId = editingProxyProvider?.id || '{config_id}'
-                            return `${baseUrl}/api/proxy-provider/${configId}?token=${userToken || '{user_token}'}`
+                            return absoluteURL(`/api/proxy-provider/${configId}?token=${userToken || '{user_token}'}`)
                           })()}
                           readOnly
                           className='font-mono text-xs bg-muted'
@@ -5490,9 +5487,8 @@ function SubscribeFilesPage() {
                           variant='outline'
                           size='sm'
                           onClick={() => {
-                            const baseUrl = typeof window !== 'undefined' ? window.location.origin : ''
                             const configId = editingProxyProvider?.id || '{config_id}'
-                            const url = `${baseUrl}/api/proxy-provider/${configId}?token=${userToken || '{user_token}'}`
+                            const url = absoluteURL(`/api/proxy-provider/${configId}?token=${userToken || '{user_token}'}`)
                             navigator.clipboard.writeText(url)
                             toast.success('URL 已复制')
                           }}

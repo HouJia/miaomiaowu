@@ -5,6 +5,7 @@ import { Loader2, Save, Layers, Activity, MapPin, Plus, Eye, Pencil, Trash2, Set
 import { Topbar } from '@/components/layout/topbar'
 import { useAuthStore } from '@/stores/auth-store'
 import { api } from '@/lib/api'
+import { absoluteURL } from '@/lib/paths'
 import { EditNodesDialog } from '@/components/edit-nodes-dialog'
 import { MobileEditNodesDialog } from '@/components/mobile-edit-nodes-dialog'
 import { useMediaQuery } from '@/hooks/use-media-query'
@@ -1460,11 +1461,10 @@ function SubscriptionGeneratorPage() {
       if (nonMmwProviders.length > 0) {
         const providers: Record<string, any> = {}
         nonMmwProviders.forEach(config => {
-          const baseUrl = window.location.origin
           const providerConfig: Record<string, any> = {
             type: config.type || 'http',
             path: `./proxy_providers/${config.name}.yaml`,
-            url: `${baseUrl}/api/proxy-provider/${config.id}?token=${userToken}`,
+            url: absoluteURL(`/api/proxy-provider/${config.id}?token=${userToken}`),
             interval: config.interval || 3600,
           }
           if (config.health_check_enabled) {

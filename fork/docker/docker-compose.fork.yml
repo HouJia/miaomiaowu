@@ -1,0 +1,24 @@
+# Fork 子路径部署示例（默认 BASE_PATH=/mmw，无需写 environment）
+services:
+  miaomiaowu-fork:
+    build:
+      context: ../..
+      dockerfile: fork/docker/Dockerfile.fork
+    ports:
+      - "8080:8080"
+    volumes:
+      - mmw-data:/app/data
+      - mmw-subscribes:/app/subscribes
+    restart: unless-stopped
+    labels:
+      # Container Station「浏览」只按端口生成 URL，不含应用子路径；访问根路径 / 会自动 302 到 /mmw/
+      mmw.base-path: "/mmw"
+      mmw.public-url: "http://<NAS_IP>:8080/mmw/"
+    # 可选覆盖：
+    # environment:
+    #   - BASE_PATH=/mmw
+    #   - PUBLIC_ORIGIN=https://你的公网域名
+
+volumes:
+  mmw-data:
+  mmw-subscribes:

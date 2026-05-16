@@ -1,0 +1,47 @@
+# Fork 多阶段构建：前端 base=/mmw/ + forkserver
+FROM node:20-slim AS frontend-builder
+
+WORKDIR /app
+COPY miaomiaowu/package*.json ./miaomiaowu/
+WORKDIR /app/miaomiaowu
+RUN npm ci
+COPY miaomiaowu/ ./
+RUN npx vite build --config vite.config.fork.mts
+
+FROM golang:1.24-bookworm AS backend-builder
+
+ARG TARGETOS
+ARG TARGETARCH
+
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends git gcc libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+COPY --from=frontend-builder /app/internal/web/dist ./internal/web/dist
+
+RUN CGO_ENABLED=1 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build \
+    -trimpath -ldflags="-s -w" -o /app/forkserver ./fork/cmd/forkserver
+
+FROM debian:bookworm-slim
+
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tzdata gosu wget \
+    && rm -rf /var/lib/apt/lists/*
+RUN groupadd -g 1000 appuser && useradd -u 1000 -g appuser -m appuser
+
+COPY --from=backend-builder /app/forkserver /app/forkserver
+COPY --from=backend-builder /app/rule_templates /app/rule_templates
+COPY docker-entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh && chown -R appuser:appuser /app/forkserver /app/rule_templates
+
+VOLUME ["/app/data", "/app/subscribes"]
+EXPOSE 8080
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:8080/mmw/ || exit 1
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["/app/forkserver"]

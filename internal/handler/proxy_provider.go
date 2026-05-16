@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"miaomiaowu/internal/auth"
+	"miaomiaowu/internal/publicpath"
 	"miaomiaowu/internal/storage"
 	"miaomiaowu/internal/util"
 	"miaomiaowu/internal/validator"
@@ -1382,7 +1383,7 @@ func createProxyProviderYAMLNode(config *storage.ProxyProviderConfig) *yaml.Node
 	// url (使用相对路径，实际 URL 需要前端填充)
 	node.Content = append(node.Content,
 		&yaml.Node{Kind: yaml.ScalarNode, Value: "url"},
-		&yaml.Node{Kind: yaml.ScalarNode, Value: fmt.Sprintf("/api/proxy-provider/%d", config.ID)},
+		&yaml.Node{Kind: yaml.ScalarNode, Value: publicpath.Join("api", "proxy-provider", strconv.FormatInt(config.ID, 10))},
 	)
 
 	// interval

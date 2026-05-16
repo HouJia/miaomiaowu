@@ -40,13 +40,13 @@ echo "前端构建完成 ✓"
 # 2. 构建 Go 后端 (Linux)
 echo ""
 echo "[2/3] 构建 Linux 版本后端..."
-GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "${BUILD_DIR}/mmw-linux-amd64" cmd/server/main.go cmd/server/cors.go
+GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o "${BUILD_DIR}/mmw-linux-amd64" ./cmd/server
 echo "Linux 后端构建完成 ✓"
 
 # 3. 构建 Go 后端 (Windows)
 echo ""
 echo "[3/3] 构建 Windows 版本后端..."
-GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o "${BUILD_DIR}/mmw-windows-amd64.exe" cmd/server/main.go cmd/server/cors.go
+GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o "${BUILD_DIR}/mmw-windows-amd64.exe" ./cmd/server
 echo "Windows 后端构建完成 ✓"
 
 # 4. 准备发布文件

@@ -18,6 +18,7 @@ import (
 
 	"miaomiaowu/internal/auth"
 	"miaomiaowu/internal/notify"
+	"miaomiaowu/internal/publicpath"
 	"miaomiaowu/internal/scriptengine"
 	"miaomiaowu/internal/storage"
 	"miaomiaowu/internal/substore"
@@ -1181,8 +1182,9 @@ func GetExternalSubscriptionsFromFile(ctx context.Context, data []byte, username
 		for providerName, provider := range proxyProviders {
 			if providerMap, ok := provider.(map[string]any); ok {
 				if urlStr, ok := providerMap["url"].(string); ok && urlStr != "" {
-					// 检查是否为内部 API 端点：/api/proxy-provider/{id}
-					if configIDStr, found := strings.CutPrefix(urlStr, "/api/proxy-provider/"); found {
+					// 检查是否为内部 API 端点（含 BASE_PATH 前缀）
+					apiProxyPrefix := publicpath.Join("api", "proxy-provider") + "/"
+					if configIDStr, found := strings.CutPrefix(urlStr, apiProxyPrefix); found {
 						if configID, err := strconv.ParseInt(configIDStr, 10, 64); err == nil {
 							if url, ok := configIDToURL[configID]; ok {
 								usedURLs[url] = true

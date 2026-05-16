@@ -1,5 +1,6 @@
 import axios, { AxiosError } from 'axios'
 import { useAuthStore } from '@/stores/auth-store'
+import { apiBaseURL, withBase } from '@/lib/paths'
 
 const AUTH_HEADER = 'MM-Authorization'
 const rawConfiguredBaseURL = (import.meta.env.VITE_API_BASE_URL ?? '').trim()
@@ -14,12 +15,7 @@ export const api = axios.create({
 })
 
 if (!api.defaults.baseURL && typeof window !== 'undefined' && window.location) {
-  const { protocol, host, hostname } = window.location
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
-    api.defaults.baseURL = `${protocol}//${hostname}:8080`
-  } else {
-    api.defaults.baseURL = `${protocol}//${host}`
-  }
+  api.defaults.baseURL = apiBaseURL()
 }
 
 api.interceptors.request.use((config) => {
@@ -37,14 +33,14 @@ api.interceptors.response.use(
     if (error instanceof AxiosError) {
       if (error.response?.status === 401) {
         useAuthStore.getState().auth.reset()
-        if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
-          window.location.href = '/login'
+        if (typeof window !== 'undefined' && !window.location.pathname.endsWith('/login')) {
+          window.location.href = withBase('/login')
         }
       }
       // 静默模式返回 404 时跳转到 404 页面
       if (error.response?.status === 404 && error.response?.headers?.['x-silent-mode'] === 'true') {
-        if (typeof window !== 'undefined' && window.location.pathname !== '/404') {
-          window.location.href = '/404'
+        if (typeof window !== 'undefined' && !window.location.pathname.endsWith('/404')) {
+          window.location.href = withBase('/404')
         }
       }
     }
