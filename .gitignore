@@ -37,4 +37,8 @@ miaomiaowu.db
 .idea
 VALIDATION_INTEGRATION_PLAN.md
 *.md
+!README.md
+!miaomiaowu/SITE_CONFIG.md
+!subscribes/README.md
+!docs/**/*.md
 bin/*
