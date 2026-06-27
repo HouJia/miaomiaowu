@@ -9,7 +9,7 @@ import (
 
 	"miaomiaowu/internal/auth"
 	"miaomiaowu/internal/storage"
-	"miaomiaowu/internal/substore"
+	"github.com/MMWOrg/mmwX-plugins/proxyparser/substore"
 
 	"gopkg.in/yaml.v3"
 )
@@ -335,6 +335,41 @@ func injectProxiesIntoTemplate(templateContent string, proxies []map[string]any)
 	return result, nil
 }
 
+func injectRelayGroupsIntoTemplate(templateContent string, relayGroups []map[string]any) (string, error) {
+	var root yaml.Node
+	if err := yaml.Unmarshal([]byte(templateContent), &root); err != nil {
+		return templateContent, err
+	}
+	if root.Kind != yaml.DocumentNode || len(root.Content) == 0 {
+		return templateContent, nil
+	}
+	rootMap := root.Content[0]
+	if rootMap.Kind != yaml.MappingNode {
+		return templateContent, nil
+	}
+
+	for i := 0; i < len(rootMap.Content); i += 2 {
+		if rootMap.Content[i].Value == "proxy-groups" {
+			groupsNode := rootMap.Content[i+1]
+			if groupsNode.Kind == yaml.SequenceNode {
+				for _, rg := range relayGroups {
+					groupsNode.Content = append(groupsNode.Content, mapToYAMLNode(rg))
+				}
+			}
+			break
+		}
+	}
+
+	var buf strings.Builder
+	encoder := yaml.NewEncoder(&buf)
+	encoder.SetIndent(2)
+	if err := encoder.Encode(&root); err != nil {
+		return templateContent, err
+	}
+	encoder.Close()
+	return RemoveUnicodeEscapeQuotes(buf.String()), nil
+}
+
 // mapToYAMLNode converts a map to a YAML mapping node
 func mapToYAMLNode(m map[string]any) *yaml.Node {
 	node := &yaml.Node{
@@ -418,6 +453,17 @@ func anyToYAMLNode(v any) *yaml.Node {
 			Value: boolToString(val),
 		}
 	case []any:
+		seqNode := &yaml.Node{
+			Kind: yaml.SequenceNode,
+			Tag:  "!!seq",
+		}
+		for _, item := range val {
+			seqNode.Content = append(seqNode.Content, anyToYAMLNode(item))
+		}
+		return seqNode
+	case []string:
+		// 中转组 proxies 等以 []string 传入，需序列化为 YAML 序列
+		// （否则会落到 default 分支被渲染成空字符串，导致中转组成员丢失）
 		seqNode := &yaml.Node{
 			Kind: yaml.SequenceNode,
 			Tag:  "!!seq",

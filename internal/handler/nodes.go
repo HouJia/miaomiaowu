@@ -129,31 +129,6 @@ func applyNodeNameFilterToClashProxies(proxies []map[string]any, filterRegex *re
 	return filteredProxies, filteredCount
 }
 
-func applyNodeNameFilterToV2rayURIs(uris []string, filterRegex *regexp.Regexp, filterPattern string) ([]string, int) {
-	if filterRegex == nil || len(uris) == 0 {
-		return uris, 0
-	}
-
-	filteredURIs := make([]string, 0, len(uris))
-	filteredCount := 0
-
-	for _, uri := range uris {
-		proxy, err := ParseProxyURL(uri)
-		if err == nil {
-			if proxyName, ok := proxy["name"].(string); ok {
-				if filterRegex.MatchString(proxyName) {
-					filteredCount++
-					logger.Info("[订阅获取] 过滤v2ray节点", "name", proxyName, "pattern", filterPattern)
-					continue
-				}
-			}
-		}
-		filteredURIs = append(filteredURIs, uri)
-	}
-
-	return filteredURIs, filteredCount
-}
-
 type nodesHandler struct {
 	repo            *storage.TrafficRepository
 	subscribeDir    string
@@ -186,6 +161,8 @@ func (h *nodesHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleBatchCreate(w, r)
 	case path == "fetch-subscription" && r.Method == http.MethodPost:
 		h.handleFetchSubscription(w, r)
+	case path == "parse-uris" && r.Method == http.MethodPost:
+		h.handleParseURIs(w, r)
 	case strings.HasSuffix(path, "/probe-binding") && r.Method == http.MethodPut:
 		idSegment := strings.TrimSuffix(path, "/probe-binding")
 		h.handleUpdateProbeBinding(w, r, idSegment)
@@ -245,6 +222,7 @@ func (h *nodesHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	req.parseChainProxyNodeID()
+	req.parseEnabled()
 
 	// 校验节点名称不为空
 	if strings.TrimSpace(req.NodeName) == "" {
@@ -285,17 +263,24 @@ func (h *nodesHandler) handleCreate(w http.ResponseWriter, r *http.Request) {
 
 	logger.Info("[节点创建] 校验通过 - 节点名称, 用户", "node_name", req.NodeName, "user", username)
 
+	var relayGroupNodeIDs []int64
+	if req.RawRelayGroupNodeIDs != nil && string(req.RawRelayGroupNodeIDs) != "null" {
+		_ = json.Unmarshal(req.RawRelayGroupNodeIDs, &relayGroupNodeIDs)
+	}
+
 	node := storage.Node{
-		Username:         username,
-		RawURL:           req.RawURL,
-		NodeName:         req.NodeName,
-		Protocol:         req.Protocol,
-		ParsedConfig:     req.ParsedConfig,
-		ClashConfig:      req.ClashConfig,
-		Enabled:          req.Enabled,
-		Tag:              req.Tag,
-		Tags:             req.Tags,
-		ChainProxyNodeID: req.ChainProxyNodeID,
+		Username:          username,
+		RawURL:            req.RawURL,
+		NodeName:          req.NodeName,
+		Protocol:          req.Protocol,
+		ParsedConfig:      req.ParsedConfig,
+		ClashConfig:       req.ClashConfig,
+		Enabled:           req.resolvedEnabled(true),
+		Tag:               req.Tag,
+		Tags:              req.Tags,
+		ChainProxyNodeID:  req.ChainProxyNodeID,
+		RelayGroupName:    req.RelayGroupName,
+		RelayGroupNodeIDs: relayGroupNodeIDs,
 	}
 	if len(node.Tags) == 0 && node.Tag != "" {
 		node.Tags = []string{node.Tag}
@@ -349,7 +334,7 @@ func (h *nodesHandler) handleBatchCreate(w http.ResponseWriter, r *http.Request)
 			Protocol:     n.Protocol,
 			ParsedConfig: n.ParsedConfig,
 			ClashConfig:  n.ClashConfig,
-			Enabled:      n.Enabled,
+			Enabled:      n.resolvedEnabled(true),
 			Tag:          n.Tag,
 			Tags:         n.Tags,
 		})
@@ -403,6 +388,7 @@ func (h *nodesHandler) handleUpdate(w http.ResponseWriter, r *http.Request, idSe
 		return
 	}
 	req.parseChainProxyNodeID()
+	req.parseEnabled()
 
 	// 如果节点名称被修改，需要校验新名称
 	if req.NodeName != "" && req.NodeName != oldNodeName {
@@ -473,9 +459,20 @@ func (h *nodesHandler) handleUpdate(w http.ResponseWriter, r *http.Request, idSe
 		existing.Tags = req.Tags
 		existing.Tag = req.Tags[0]
 	}
-	existing.Enabled = req.Enabled
+	// 仅在请求显式带 enabled 时更新，避免解除/创建中转组等局部更新把节点误置为禁用
+	if req.hasEnabled() {
+		existing.Enabled = req.Enabled
+	}
 	if req.hasChainProxyNodeID() {
 		existing.ChainProxyNodeID = req.ChainProxyNodeID
+	}
+	if req.RawRelayGroupNodeIDs != nil {
+		var relayIDs []int64
+		if string(req.RawRelayGroupNodeIDs) != "null" {
+			_ = json.Unmarshal(req.RawRelayGroupNodeIDs, &relayIDs)
+		}
+		existing.RelayGroupNodeIDs = relayIDs
+		existing.RelayGroupName = req.RelayGroupName
 	}
 
 	updated, err := h.repo.UpdateNode(r.Context(), existing)
@@ -984,16 +981,45 @@ func (h *nodesHandler) handleBatchRename(w http.ResponseWriter, r *http.Request)
 }
 
 type nodeRequest struct {
-	RawURL              string           `json:"raw_url"`
-	NodeName            string           `json:"node_name"`
-	Protocol            string           `json:"protocol"`
-	ParsedConfig        string           `json:"parsed_config"`
-	ClashConfig         string           `json:"clash_config"`
-	Enabled             bool             `json:"enabled"`
-	Tag                 string           `json:"tag"`
-	Tags                []string         `json:"tags"`
-	ChainProxyNodeID    *int64           `json:"-"`
-	RawChainProxyNodeID json.RawMessage  `json:"chain_proxy_node_id"`
+	RawURL               string          `json:"raw_url"`
+	NodeName             string          `json:"node_name"`
+	Protocol             string          `json:"protocol"`
+	ParsedConfig         string          `json:"parsed_config"`
+	ClashConfig          string          `json:"clash_config"`
+	Enabled              bool            `json:"-"`
+	RawEnabled           json.RawMessage `json:"enabled"`
+	Tag                  string          `json:"tag"`
+	Tags                 []string        `json:"tags"`
+	ChainProxyNodeID     *int64          `json:"-"`
+	RawChainProxyNodeID  json.RawMessage `json:"chain_proxy_node_id"`
+	RelayGroupName       string          `json:"relay_group_name"`
+	RawRelayGroupNodeIDs json.RawMessage `json:"relay_group_node_ids"`
+}
+
+// hasEnabled 报告请求里是否显式带了 enabled 字段(用于区分"未提供"与"false",
+// 避免局部更新如解除/创建中转组时把 enabled 误重置)。
+func (r *nodeRequest) hasEnabled() bool {
+	return r.RawEnabled != nil && string(r.RawEnabled) != "null"
+}
+
+// parseEnabled 把 RawEnabled 解析到 Enabled(未提供则保持零值 false)。
+func (r *nodeRequest) parseEnabled() {
+	if r.hasEnabled() {
+		_ = json.Unmarshal(r.RawEnabled, &r.Enabled)
+	}
+}
+
+// resolvedEnabled 解析 enabled:显式提供则用该值,未提供则用 def。
+// 创建/导入应传 def=true(节点默认启用;"禁用"功能已弃用),避免缺省被误建成禁用。
+func (r *nodeRequest) resolvedEnabled(def bool) bool {
+	if !r.hasEnabled() {
+		return def
+	}
+	var v bool
+	if err := json.Unmarshal(r.RawEnabled, &v); err != nil {
+		return def
+	}
+	return v
 }
 
 func (r *nodeRequest) hasChainProxyNodeID() bool {
@@ -1012,20 +1038,22 @@ func (r *nodeRequest) parseChainProxyNodeID() {
 }
 
 type nodeDTO struct {
-	ID               int64     `json:"id"`
-	RawURL           string    `json:"raw_url"`
-	NodeName         string    `json:"node_name"`
-	Protocol         string    `json:"protocol"`
-	ParsedConfig     string    `json:"parsed_config"`
-	ClashConfig      string    `json:"clash_config"`
-	Enabled          bool      `json:"enabled"`
-	Tag              string    `json:"tag"`
-	Tags             []string  `json:"tags"`
-	OriginalServer   string    `json:"original_server"`
-	ProbeServer      string    `json:"probe_server"`
-	ChainProxyNodeID *int64    `json:"chain_proxy_node_id"`
-	CreatedAt        time.Time `json:"created_at"`
-	UpdatedAt        time.Time `json:"updated_at"`
+	ID                int64     `json:"id"`
+	RawURL            string    `json:"raw_url"`
+	NodeName          string    `json:"node_name"`
+	Protocol          string    `json:"protocol"`
+	ParsedConfig      string    `json:"parsed_config"`
+	ClashConfig       string    `json:"clash_config"`
+	Enabled           bool      `json:"enabled"`
+	Tag               string    `json:"tag"`
+	Tags              []string  `json:"tags"`
+	OriginalServer    string    `json:"original_server"`
+	ProbeServer       string    `json:"probe_server"`
+	ChainProxyNodeID  *int64    `json:"chain_proxy_node_id"`
+	RelayGroupName    string    `json:"relay_group_name"`
+	RelayGroupNodeIDs []int64   `json:"relay_group_node_ids"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 func convertNode(node storage.Node) nodeDTO {
@@ -1033,21 +1061,27 @@ func convertNode(node storage.Node) nodeDTO {
 	if tags == nil {
 		tags = []string{}
 	}
+	relayGroupNodeIDs := node.RelayGroupNodeIDs
+	if relayGroupNodeIDs == nil {
+		relayGroupNodeIDs = []int64{}
+	}
 	return nodeDTO{
-		ID:               node.ID,
-		RawURL:           node.RawURL,
-		NodeName:         node.NodeName,
-		Protocol:         node.Protocol,
-		ParsedConfig:     node.ParsedConfig,
-		ClashConfig:      node.ClashConfig,
-		Enabled:          node.Enabled,
-		Tag:              node.Tag,
-		Tags:             tags,
-		OriginalServer:   node.OriginalServer,
-		ProbeServer:      node.ProbeServer,
-		ChainProxyNodeID: node.ChainProxyNodeID,
-		CreatedAt:        node.CreatedAt,
-		UpdatedAt:        node.UpdatedAt,
+		ID:                node.ID,
+		RawURL:            node.RawURL,
+		NodeName:          node.NodeName,
+		Protocol:          node.Protocol,
+		ParsedConfig:      node.ParsedConfig,
+		ClashConfig:       node.ClashConfig,
+		Enabled:           node.Enabled,
+		Tag:               node.Tag,
+		Tags:              tags,
+		OriginalServer:    node.OriginalServer,
+		ProbeServer:       node.ProbeServer,
+		ChainProxyNodeID:  node.ChainProxyNodeID,
+		RelayGroupName:    node.RelayGroupName,
+		RelayGroupNodeIDs: relayGroupNodeIDs,
+		CreatedAt:         node.CreatedAt,
+		UpdatedAt:         node.UpdatedAt,
 	}
 }
 
@@ -1067,9 +1101,11 @@ func (h *nodesHandler) handleFetchSubscription(w http.ResponseWriter, r *http.Re
 	}
 
 	var req struct {
-		URL            string `json:"url"`
-		UserAgent      string `json:"user_agent"`
-		SkipCertVerify bool   `json:"skip_cert_verify"`
+		URL                 string `json:"url"`
+		UserAgent           string `json:"user_agent"`
+		FetchSkipCertVerify bool   `json:"fetch_skip_cert_verify"` // 仅控制拉取订阅时跳过 HTTPS 证书校验
+		ForceNodeSkipCert   bool   `json:"force_node_skip_cert"`   // 是否给每个导入节点强制写 skip-cert-verify
+		SkipCertVerify      bool   `json:"skip_cert_verify"`       // 兼容旧前端：等价 fetch_skip_cert_verify
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1081,6 +1117,10 @@ func (h *nodesHandler) handleFetchSubscription(w http.ResponseWriter, r *http.Re
 		writeBadRequest(w, "订阅URL是必填项")
 		return
 	}
+
+	// 拉取订阅是否跳过证书校验（兼容旧字段 skip_cert_verify）。
+	// 注意：这与"是否给节点强制写 skip-cert-verify"(ForceNodeSkipCert) 是两个独立语义。
+	fetchSkip := req.FetchSkipCertVerify || req.SkipCertVerify
 
 	// 如果没有提供 User-Agent，使用默认值
 	userAgent := req.UserAgent
@@ -1111,8 +1151,8 @@ func (h *nodesHandler) handleFetchSubscription(w http.ResponseWriter, r *http.Re
 		Timeout: 30 * time.Second,
 	}
 
-	// 如果需要跳过证书验证
-	if req.SkipCertVerify {
+	// 如果需要跳过证书验证（仅影响拉取订阅的 HTTP client，不影响节点配置）
+	if fetchSkip {
 		client.Transport = &http.Transport{
 			TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
 		}
@@ -1127,7 +1167,7 @@ func (h *nodesHandler) handleFetchSubscription(w http.ResponseWriter, r *http.Re
 	// 添加User-Agent头
 	httpReq.Header.Set("User-Agent", userAgent)
 
-	logger.Info("[订阅获取] 开始请求外部订阅", "url", req.URL, "user_agent", userAgent, "skip_cert_verify", req.SkipCertVerify)
+	logger.Info("[订阅获取] 开始请求外部订阅", "url", req.URL, "user_agent", userAgent, "fetch_skip_cert_verify", fetchSkip)
 
 	resp, err := client.Do(httpReq)
 	if err != nil {
@@ -1223,31 +1263,29 @@ func (h *nodesHandler) handleFetchSubscription(w http.ResponseWriter, r *http.Re
 			return
 		}
 
-		// 按行分割，过滤空行
-		lines := strings.Split(decoded, "\n")
-		var uris []string
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				uris = append(uris, line)
-			}
-		}
-
-		if len(uris) == 0 {
+		// 后端统一解析为 clash 节点（经 proxyparser），与 clash 分支同构返回 proxies
+		proxies, err := ParseV2raySubscription(decoded)
+		if err != nil || len(proxies) == 0 {
 			writeError(w, http.StatusBadRequest, errors.New("订阅中没有找到代理节点"))
 			return
 		}
-
-		filteredURIs, filteredCount := applyNodeNameFilterToV2rayURIs(uris, filterRegex, nodeNameFilter)
-		if filteredCount > 0 {
-			logger.Info("[订阅获取] v2ray节点过滤完成", "filtered_count", filteredCount, "remaining_count", len(filteredURIs))
+		for _, proxy := range proxies {
+			convertNilToEmptyStringInMap(proxy)
+			decodeProxyURLFields(proxy)
+			if req.ForceNodeSkipCert {
+				proxy["skip-cert-verify"] = true
+			}
 		}
 
-		logger.Info("[订阅获取] v2ray格式解析成功", "url", req.URL, "uri_count", len(filteredURIs))
+		filteredProxies, filteredCount := applyNodeNameFilterToClashProxies(proxies, filterRegex, nodeNameFilter)
+		if filteredCount > 0 {
+			logger.Info("[订阅获取] v2ray节点过滤完成", "filtered_count", filteredCount, "remaining_count", len(filteredProxies))
+		}
+
+		logger.Info("[订阅获取] v2ray格式解析成功", "url", req.URL, "node_count", len(filteredProxies))
 		response := map[string]any{
-			"format":         "v2ray",
-			"uris":           filteredURIs,
-			"count":          len(filteredURIs),
+			"proxies":        filteredProxies,
+			"count":          len(filteredProxies),
 			"filtered_count": filteredCount,
 			"suggested_tag":  suggestedTag,
 		}
@@ -1299,6 +1337,9 @@ func (h *nodesHandler) handleFetchSubscription(w http.ResponseWriter, r *http.Re
 	for _, proxy := range clashConfig.Proxies {
 		convertNilToEmptyStringInMap(proxy)
 		decodeProxyURLFields(proxy)
+		if req.ForceNodeSkipCert {
+			proxy["skip-cert-verify"] = true
+		}
 	}
 
 	filteredProxies, filteredCount := applyNodeNameFilterToClashProxies(clashConfig.Proxies, filterRegex, nodeNameFilter)
@@ -1324,6 +1365,47 @@ func (h *nodesHandler) handleFetchSubscription(w http.ResponseWriter, r *http.Re
 		}
 	}
 	respondJSON(w, http.StatusOK, response)
+}
+
+// handleParseURIs 解析前端粘贴的多行 URI / base64 订阅文本，返回 clash 节点。
+// 前端把含 :// 的行发到这里（Surge INI 行仍由前端本地 parseSurgeLine 兜底）。
+// POST /api/admin/nodes/parse-uris  body: {content, force_node_skip_cert}
+func (h *nodesHandler) handleParseURIs(w http.ResponseWriter, r *http.Request) {
+	username := auth.UsernameFromContext(r.Context())
+	if username == "" {
+		writeError(w, http.StatusUnauthorized, errors.New("用户未认证"))
+		return
+	}
+	var req struct {
+		Content           string `json:"content"`
+		ForceNodeSkipCert bool   `json:"force_node_skip_cert"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeBadRequest(w, "请求格式不正确")
+		return
+	}
+	if strings.TrimSpace(req.Content) == "" {
+		writeBadRequest(w, "内容不能为空")
+		return
+	}
+
+	proxies, err := ParseV2raySubscription(req.Content)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, errors.New("解析失败: "+err.Error()))
+		return
+	}
+	for _, proxy := range proxies {
+		convertNilToEmptyStringInMap(proxy)
+		decodeProxyURLFields(proxy)
+		if req.ForceNodeSkipCert {
+			proxy["skip-cert-verify"] = true
+		}
+	}
+
+	respondJSON(w, http.StatusOK, map[string]any{
+		"proxies": proxies,
+		"count":   len(proxies),
+	})
 }
 
 // handleUpdateProbeBinding updates the probe server binding for a node.

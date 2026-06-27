@@ -15,6 +15,7 @@ import (
 	"miaomiaowu/internal/handler"
 	"miaomiaowu/internal/logger"
 	"miaomiaowu/internal/notify"
+	"miaomiaowu/internal/patches"
 	"miaomiaowu/internal/proxygroups"
 	"miaomiaowu/internal/storage"
 	"miaomiaowu/internal/version"
@@ -98,6 +99,14 @@ func Run(opts ...RunOption) {
 		os.Exit(1)
 	}
 
+	// rule_templates 补丁:Ensure 不覆盖已存在文件(保护用户自定义),
+	// 但对历史已知错误的 dns 块(语义比对,顺序无关)做一次精准替换。详见 internal/patches 包注释。
+	if patched, err := patches.ApplyDNSPatches(ruleTemplatesDir); err != nil {
+		logger.Warn("DNS 模板补丁应用过程出错(不影响启动)", "error", err)
+	} else if patched > 0 {
+		logger.Info("DNS 模板补丁已应用", "count", patched)
+	}
+
 	// 初始化代理组配置 Store（纯内存存储）
 	// 优先从系统配置的远程地址拉取，失败时使用空配置
 	var proxyGroupsStore *proxygroups.Store
@@ -132,20 +141,19 @@ func Run(opts ...RunOption) {
 	syncSubscribeFilesToDatabase(repo, subscribeDir)
 
 	// 初始化通知模块
-	if sysCfg, err := repo.GetSystemConfig(context.Background()); err == nil {
-		handler.InitNotifier(notify.Config{
-			Enabled:              sysCfg.NotifyEnabled,
-			BotToken:             sysCfg.TelegramBotToken,
-			ChatID:               sysCfg.TelegramChatID,
-			NotifySubscribeFetch: sysCfg.NotifySubscribeFetch,
-			NotifyLogin:          sysCfg.NotifyLogin,
-			NotifyIPBan:          sysCfg.NotifyIPBan,
-			NotifySilentMode:     sysCfg.NotifySilentMode,
-			NotifyDailyTraffic:   sysCfg.NotifyDailyTraffic,
-			NotifyExpiry:         sysCfg.NotifyExpiry,
-			DailyTrafficTime:     sysCfg.NotifyDailyTrafficTime,
-		})
-	}
+	sysCfg, _ := repo.GetSystemConfig(context.Background())
+	handler.InitNotifier(notify.Config{
+		Enabled:              sysCfg.NotifyEnabled,
+		BotToken:             sysCfg.TelegramBotToken,
+		ChatID:               sysCfg.TelegramChatID,
+		NotifySubscribeFetch: sysCfg.NotifySubscribeFetch,
+		NotifyLogin:          sysCfg.NotifyLogin,
+		NotifyIPBan:          sysCfg.NotifyIPBan,
+		NotifySilentMode:     sysCfg.NotifySilentMode,
+		NotifyDailyTraffic:   sysCfg.NotifyDailyTraffic,
+		NotifyExpiry:         sysCfg.NotifyExpiry,
+		DailyTrafficTime:     sysCfg.NotifyDailyTrafficTime,
+	})
 
 	// 启动时初始化代理集合缓存
 	go handler.InitProxyProviderCacheOnStartup(repo)
@@ -156,7 +164,8 @@ func Run(opts ...RunOption) {
 
 	trafficHandler := handler.NewTrafficSummaryHandler(repo)
 	userRepo := auth.NewRepositoryAdapter(repo)
-	loginRateLimiter := handler.NewLoginRateLimiter()
+	loginRateLimiter := handler.NewLoginRateLimiterWithConfig(sysCfg.LoginRateMaxAttempts, sysCfg.LoginRateWindow, sysCfg.LoginRateLockDuration)
+	loginRateLimiter.SetSkipLocalIP(sysCfg.SkipLocalIP)
 
 	mux := http.NewServeMux()
 	mux.Handle("/api/setup/status", handler.NewSetupStatusHandler(repo))
@@ -250,6 +259,13 @@ func Run(opts ...RunOption) {
 	mux.Handle("/api/user/short-link", auth.RequireToken(tokenStore, handler.NewShortLinkResetHandler(repo)))
 	mux.Handle("/api/user/custom-short-code", auth.RequireToken(tokenStore, handler.NewUserCustomShortCodeSelfHandler(repo)))
 
+	// Speed test endpoints
+	speedTesterWS := handler.NewSpeedTesterWSHandler(repo)
+	speedTestHandler := handler.NewSpeedTestHandler(repo)
+	speedTestHandler.SetTesterWS(speedTesterWS)
+	mux.Handle("/api/admin/speedtest/", auth.RequireAdmin(tokenStore, userRepo, speedTestHandler))
+	mux.Handle("/api/speedtest/tester/ws", speedTesterWS)
+
 	// Temporary subscription endpoints
 	mux.Handle("/api/admin/temp-subscription", auth.RequireAdmin(tokenStore, userRepo, handler.NewTempSubscriptionHandler()))
 	tempSubAccessHandler := handler.NewTempSubscriptionAccessHandler()
@@ -259,19 +275,32 @@ func Run(opts ...RunOption) {
 	// /t/{id} paths route to temporary subscription handler
 	// All other paths go to the web handler
 	shortLinkHandler := handler.NewShortLinkHandler(repo, subscriptionHandler)
-	bruteForceProtector := handler.NewBruteForceProtector()
+	bruteForceProtector := handler.NewBruteForceProtectorWithConfig(sysCfg.BruteForceEnabled, sysCfg.BruteForceMaxFailures, sysCfg.BruteForceWindow, sysCfg.BruteForceBlockDuration)
+	bruteForceProtector.SetSkipLocalIP(sysCfg.SkipLocalIP)
+	subRateLimiter := handler.NewSubscriptionRateLimiter(sysCfg.SubRateLimitMax, time.Duration(sysCfg.SubRateLimitWindow)*time.Minute)
+	subRateLimiter.SetSkipLocalIP(sysCfg.SkipLocalIP)
+	go subRateLimiter.StartCleanup(context.Background())
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.Trim(r.URL.Path, "/")
 		clientIP := handler.GetClientIP(r)
 
-		// 暴力探测封禁检查
-		if bruteForceProtector.IsBlocked(clientIP, r.URL.Path) {
+		isTempSub := strings.HasPrefix(path, "t/") && len(path) == 10
+
+		// 短链探测候选：单段字母数字路径，且不是已知前端 SPA 路由。
+		isShortLinkProbe := !isTempSub && len(path) >= 2 && isAlphanumeric(path) && !reservedFrontendRoutes[path]
+
+		if isShortLinkProbe && bruteForceProtector.IsBlocked(clientIP, r.URL.Path) {
 			http.NotFound(w, r)
 			return
 		}
 
-		// Check if this is a temporary subscription access (starts with "t/" followed by 8 hex chars)
-		if strings.HasPrefix(path, "t/") && len(path) == 10 {
+		isSubscriptionFetch := isTempSub || isShortLinkProbe
+		if isSubscriptionFetch && !subRateLimiter.Allow(clientIP) {
+			http.Error(w, "请求过于频繁，请稍后再试", http.StatusTooManyRequests)
+			return
+		}
+
+		if isTempSub {
 			rec := &handler.StatusRecorder{ResponseWriter: w, StatusCode: 200}
 			tempSubAccessHandler.ServeHTTP(rec, r)
 			if rec.StatusCode == http.StatusNotFound || rec.StatusCode == http.StatusForbidden {
@@ -279,15 +308,12 @@ func Run(opts ...RunOption) {
 			}
 			return
 		}
-		// 自定义短链接后, 订阅+用户最小为2个字符
-		// TryServe does DB lookup; returns false if no match, allowing fallthrough to web
-		if len(path) >= 2 && isAlphanumeric(path) {
+		if isShortLinkProbe {
 			if shortLinkHandler.TryServe(w, r) {
 				return
 			}
 			bruteForceProtector.RecordFailure(clientIP, r.URL.Path)
 		}
-		// Otherwise, pass to web handler
 		web.Handler().ServeHTTP(w, r)
 	})
 
@@ -330,6 +356,21 @@ func getAddr() string {
 		port = "8080"
 	}
 	return ":" + port
+}
+
+// reservedFrontendRoutes 是前端 SPA 的顶层路由名（单段、纯字母数字的那些，需与
+// miaomiaowu/src/routes 保持一致）。这些是合法的前端路由，访问时不能被当作订阅短链探测。
+var reservedFrontendRoutes = map[string]bool{
+	"nodes":        true,
+	"login":        true,
+	"rules":        true,
+	"generator":    true,
+	"probe":        true,
+	"settings":     true,
+	"templates":    true,
+	"users":        true,
+	"subscription": true,
+	"404":          true,
 }
 
 // isAlphanumeric checks if a string contains only alphanumeric characters

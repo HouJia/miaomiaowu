@@ -15,55 +15,81 @@ import (
 )
 
 type userConfigRequest struct {
-	ForceSyncExternal       bool    `json:"force_sync_external"`
-	MatchRule               string  `json:"match_rule"`
-	SyncScope               string  `json:"sync_scope"`
-	KeepNodeName            bool    `json:"keep_node_name"`
-	CacheExpireMinutes      int     `json:"cache_expire_minutes"`
-	SyncTraffic             bool    `json:"sync_traffic"`
-	EnableProbeBinding      bool    `json:"enable_probe_binding"`
-	CustomRulesEnabled      bool    `json:"custom_rules_enabled"`
-	EnableShortLink         bool    `json:"enable_short_link"`
-	TemplateVersion         string  `json:"template_version"`
-	EnableProxyProvider     bool    `json:"enable_proxy_provider"`
-	NodeOrder               []int64 `json:"node_order"`
-	NodeNameFilter          string  `json:"node_name_filter"`
-	ProxyGroupsSourceURL    string  `json:"proxy_groups_source_url"`
-	ClientCompatibilityMode bool    `json:"client_compatibility_mode"`
-	SilentMode              bool    `json:"silent_mode"`
-	SilentModeTimeout       int     `json:"silent_mode_timeout"`
-	EnableSubInfoNodes      bool    `json:"enable_sub_info_nodes"`
-	SubInfoExpirePrefix     string  `json:"sub_info_expire_prefix"`
-	SubInfoTrafficPrefix    string  `json:"sub_info_traffic_prefix"`
-	EnableSubTrafficHeader    bool   `json:"enable_sub_traffic_header"`
-	EnableOverrideScripts     bool   `json:"enable_override_scripts"`
-	SubscriptionOutputFormat  string `json:"subscription_output_format"`
+	ForceSyncExternal        bool    `json:"force_sync_external"`
+	MatchRule                string  `json:"match_rule"`
+	SyncScope                string  `json:"sync_scope"`
+	KeepNodeName             bool    `json:"keep_node_name"`
+	CacheExpireMinutes       int     `json:"cache_expire_minutes"`
+	SyncTraffic              bool    `json:"sync_traffic"`
+	EnableProbeBinding       bool    `json:"enable_probe_binding"`
+	CustomRulesEnabled       bool    `json:"custom_rules_enabled"`
+	EnableShortLink          bool    `json:"enable_short_link"`
+	TemplateVersion          string  `json:"template_version"`
+	EnableProxyProvider      bool    `json:"enable_proxy_provider"`
+	NodeOrder                []int64 `json:"node_order"`
+	NodeNameFilter           string  `json:"node_name_filter"`
+	AppendSubInfo            bool    `json:"append_sub_info"`
+	ProxyGroupsSourceURL     string  `json:"proxy_groups_source_url"`
+	ClientCompatibilityMode  bool    `json:"client_compatibility_mode"`
+	SilentMode               bool    `json:"silent_mode"`
+	SilentModeTimeout        int     `json:"silent_mode_timeout"`
+	EnableSubInfoNodes       bool    `json:"enable_sub_info_nodes"`
+	SubInfoExpirePrefix      string  `json:"sub_info_expire_prefix"`
+	SubInfoTrafficPrefix     string  `json:"sub_info_traffic_prefix"`
+	EnableSubTrafficHeader   bool    `json:"enable_sub_traffic_header"`
+	EnableOverrideScripts    bool    `json:"enable_override_scripts"`
+	SubscriptionOutputFormat string  `json:"subscription_output_format"`
+	// 安全配置
+	LoginRateMaxAttempts    int  `json:"login_rate_max_attempts"`
+	LoginRateWindow         int  `json:"login_rate_window"`
+	LoginRateLockDuration   int  `json:"login_rate_lock_duration"`
+	BruteForceEnabled       bool `json:"brute_force_enabled"`
+	BruteForceMaxFailures   int  `json:"brute_force_max_failures"`
+	BruteForceWindow        int  `json:"brute_force_window"`
+	BruteForceBlockDuration int  `json:"brute_force_block_duration"`
+	SubRateLimitEnabled     bool `json:"sub_rate_limit_enabled"`
+	SubRateLimitMax         int  `json:"sub_rate_limit_max"`
+	SubRateLimitWindow      int  `json:"sub_rate_limit_window"`
+	SkipLocalIP             bool `json:"skip_local_ip"`
 }
 
 type userConfigResponse struct {
-	ForceSyncExternal       bool    `json:"force_sync_external"`
-	MatchRule               string  `json:"match_rule"`
-	SyncScope               string  `json:"sync_scope"`
-	KeepNodeName            bool    `json:"keep_node_name"`
-	CacheExpireMinutes      int     `json:"cache_expire_minutes"`
-	SyncTraffic             bool    `json:"sync_traffic"`
-	EnableProbeBinding      bool    `json:"enable_probe_binding"`
-	CustomRulesEnabled      bool    `json:"custom_rules_enabled"`
-	EnableShortLink         bool    `json:"enable_short_link"`
-	TemplateVersion         string  `json:"template_version"`
-	EnableProxyProvider     bool    `json:"enable_proxy_provider"`
-	NodeOrder               []int64 `json:"node_order"`
-	NodeNameFilter          string  `json:"node_name_filter"`
-	ProxyGroupsSourceURL    string  `json:"proxy_groups_source_url"`
-	ClientCompatibilityMode bool    `json:"client_compatibility_mode"`
-	SilentMode              bool    `json:"silent_mode"`
-	SilentModeTimeout       int     `json:"silent_mode_timeout"`
-	EnableSubInfoNodes      bool    `json:"enable_sub_info_nodes"`
-	SubInfoExpirePrefix     string  `json:"sub_info_expire_prefix"`
-	SubInfoTrafficPrefix    string  `json:"sub_info_traffic_prefix"`
-	EnableSubTrafficHeader    bool   `json:"enable_sub_traffic_header"`
-	EnableOverrideScripts     bool   `json:"enable_override_scripts"`
-	SubscriptionOutputFormat  string `json:"subscription_output_format"`
+	ForceSyncExternal        bool    `json:"force_sync_external"`
+	MatchRule                string  `json:"match_rule"`
+	SyncScope                string  `json:"sync_scope"`
+	KeepNodeName             bool    `json:"keep_node_name"`
+	CacheExpireMinutes       int     `json:"cache_expire_minutes"`
+	SyncTraffic              bool    `json:"sync_traffic"`
+	EnableProbeBinding       bool    `json:"enable_probe_binding"`
+	CustomRulesEnabled       bool    `json:"custom_rules_enabled"`
+	EnableShortLink          bool    `json:"enable_short_link"`
+	TemplateVersion          string  `json:"template_version"`
+	EnableProxyProvider      bool    `json:"enable_proxy_provider"`
+	NodeOrder                []int64 `json:"node_order"`
+	NodeNameFilter           string  `json:"node_name_filter"`
+	AppendSubInfo            bool    `json:"append_sub_info"`
+	ProxyGroupsSourceURL     string  `json:"proxy_groups_source_url"`
+	ClientCompatibilityMode  bool    `json:"client_compatibility_mode"`
+	SilentMode               bool    `json:"silent_mode"`
+	SilentModeTimeout        int     `json:"silent_mode_timeout"`
+	EnableSubInfoNodes       bool    `json:"enable_sub_info_nodes"`
+	SubInfoExpirePrefix      string  `json:"sub_info_expire_prefix"`
+	SubInfoTrafficPrefix     string  `json:"sub_info_traffic_prefix"`
+	EnableSubTrafficHeader   bool    `json:"enable_sub_traffic_header"`
+	EnableOverrideScripts    bool    `json:"enable_override_scripts"`
+	SubscriptionOutputFormat string  `json:"subscription_output_format"`
+	// 安全配置
+	LoginRateMaxAttempts    int  `json:"login_rate_max_attempts"`
+	LoginRateWindow         int  `json:"login_rate_window"`
+	LoginRateLockDuration   int  `json:"login_rate_lock_duration"`
+	BruteForceEnabled       bool `json:"brute_force_enabled"`
+	BruteForceMaxFailures   int  `json:"brute_force_max_failures"`
+	BruteForceWindow        int  `json:"brute_force_window"`
+	BruteForceBlockDuration int  `json:"brute_force_block_duration"`
+	SubRateLimitEnabled     bool `json:"sub_rate_limit_enabled"`
+	SubRateLimitMax         int  `json:"sub_rate_limit_max"`
+	SubRateLimitWindow      int  `json:"sub_rate_limit_window"`
+	SkipLocalIP             bool `json:"skip_local_ip"`
 }
 
 func NewUserConfigHandler(repo *storage.TrafficRepository) http.Handler {
@@ -115,6 +141,7 @@ func handleGetUserConfig(w http.ResponseWriter, r *http.Request, repo *storage.T
 				EnableProxyProvider:      false,
 				NodeOrder:                []int64{},
 				NodeNameFilter:           "剩余|流量|到期|订阅|时间|重置",
+				AppendSubInfo:            false,
 				ProxyGroupsSourceURL:     systemConfig.ProxyGroupsSourceURL,
 				ClientCompatibilityMode:  systemConfig.ClientCompatibilityMode,
 				SilentMode:               systemConfig.SilentMode,
@@ -125,6 +152,17 @@ func handleGetUserConfig(w http.ResponseWriter, r *http.Request, repo *storage.T
 				EnableSubTrafficHeader:   systemConfig.EnableSubTrafficHeader,
 				EnableOverrideScripts:    systemConfig.EnableOverrideScripts,
 				SubscriptionOutputFormat: systemConfig.SubscriptionOutputFormat,
+				LoginRateMaxAttempts:     systemConfig.LoginRateMaxAttempts,
+				LoginRateWindow:          systemConfig.LoginRateWindow,
+				LoginRateLockDuration:    systemConfig.LoginRateLockDuration,
+				BruteForceEnabled:        systemConfig.BruteForceEnabled,
+				BruteForceMaxFailures:    systemConfig.BruteForceMaxFailures,
+				BruteForceWindow:         systemConfig.BruteForceWindow,
+				BruteForceBlockDuration:  systemConfig.BruteForceBlockDuration,
+				SubRateLimitEnabled:      systemConfig.SubRateLimitEnabled,
+				SubRateLimitMax:          systemConfig.SubRateLimitMax,
+				SubRateLimitWindow:       systemConfig.SubRateLimitWindow,
+				SkipLocalIP:             systemConfig.SkipLocalIP,
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
@@ -149,6 +187,7 @@ func handleGetUserConfig(w http.ResponseWriter, r *http.Request, repo *storage.T
 		EnableProxyProvider:      settings.EnableProxyProvider,
 		NodeOrder:                settings.NodeOrder,
 		NodeNameFilter:           settings.NodeNameFilter,
+		AppendSubInfo:            settings.AppendSubInfo,
 		ProxyGroupsSourceURL:     systemConfig.ProxyGroupsSourceURL,
 		ClientCompatibilityMode:  systemConfig.ClientCompatibilityMode,
 		SilentMode:               systemConfig.SilentMode,
@@ -159,6 +198,17 @@ func handleGetUserConfig(w http.ResponseWriter, r *http.Request, repo *storage.T
 		EnableSubTrafficHeader:   systemConfig.EnableSubTrafficHeader,
 		EnableOverrideScripts:    systemConfig.EnableOverrideScripts,
 		SubscriptionOutputFormat: systemConfig.SubscriptionOutputFormat,
+		LoginRateMaxAttempts:     systemConfig.LoginRateMaxAttempts,
+		LoginRateWindow:          systemConfig.LoginRateWindow,
+		LoginRateLockDuration:    systemConfig.LoginRateLockDuration,
+		BruteForceEnabled:        systemConfig.BruteForceEnabled,
+		BruteForceMaxFailures:    systemConfig.BruteForceMaxFailures,
+		BruteForceWindow:         systemConfig.BruteForceWindow,
+		BruteForceBlockDuration:  systemConfig.BruteForceBlockDuration,
+		SubRateLimitEnabled:      systemConfig.SubRateLimitEnabled,
+		SubRateLimitMax:          systemConfig.SubRateLimitMax,
+		SubRateLimitWindow:       systemConfig.SubRateLimitWindow,
+		SkipLocalIP:             systemConfig.SkipLocalIP,
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -230,6 +280,7 @@ func handleUpdateUserConfig(w http.ResponseWriter, r *http.Request, repo *storag
 		EnableProxyProvider: payload.EnableProxyProvider,
 		NodeOrder:           payload.NodeOrder,
 		NodeNameFilter:      payload.NodeNameFilter,
+		AppendSubInfo:       payload.AppendSubInfo,
 	}
 
 	if err := repo.UpsertUserSettings(r.Context(), settings); err != nil {
@@ -273,9 +324,41 @@ func handleUpdateUserConfig(w http.ResponseWriter, r *http.Request, repo *storag
 	systemConfig.EnableSubTrafficHeader = payload.EnableSubTrafficHeader
 	systemConfig.EnableOverrideScripts = payload.EnableOverrideScripts
 	systemConfig.SubscriptionOutputFormat = subscriptionOutputFormat
+	// 安全配置
+	systemConfig.LoginRateMaxAttempts = payload.LoginRateMaxAttempts
+	systemConfig.LoginRateWindow = payload.LoginRateWindow
+	systemConfig.LoginRateLockDuration = payload.LoginRateLockDuration
+	systemConfig.BruteForceEnabled = payload.BruteForceEnabled
+	systemConfig.BruteForceMaxFailures = payload.BruteForceMaxFailures
+	systemConfig.BruteForceWindow = payload.BruteForceWindow
+	systemConfig.BruteForceBlockDuration = payload.BruteForceBlockDuration
+	systemConfig.SubRateLimitEnabled = payload.SubRateLimitEnabled
+	systemConfig.SubRateLimitMax = payload.SubRateLimitMax
+	systemConfig.SubRateLimitWindow = payload.SubRateLimitWindow
+	systemConfig.SkipLocalIP = payload.SkipLocalIP
 	if err := repo.UpdateSystemConfig(r.Context(), systemConfig); err != nil {
 		writeError(w, http.StatusInternalServerError, fmt.Errorf("update system config: %w", err))
 		return
+	}
+
+	// 热更新安全组件配置
+	if rl := GetLoginRateLimiter(); rl != nil {
+		rl.UpdateConfig(systemConfig.LoginRateMaxAttempts, systemConfig.LoginRateWindow, systemConfig.LoginRateLockDuration)
+	}
+	if bfp := GetBruteForceProtector(); bfp != nil {
+		bfp.UpdateConfig(systemConfig.BruteForceEnabled, systemConfig.BruteForceMaxFailures, systemConfig.BruteForceWindow, systemConfig.BruteForceBlockDuration)
+	}
+	if srl := GetSubscriptionRateLimiter(); srl != nil {
+		srl.UpdateConfig(systemConfig.SubRateLimitEnabled, systemConfig.SubRateLimitMax, systemConfig.SubRateLimitWindow)
+	}
+	if rl := GetLoginRateLimiter(); rl != nil {
+		rl.SetSkipLocalIP(systemConfig.SkipLocalIP)
+	}
+	if bfp := GetBruteForceProtector(); bfp != nil {
+		bfp.SetSkipLocalIP(systemConfig.SkipLocalIP)
+	}
+	if srl := GetSubscriptionRateLimiter(); srl != nil {
+		srl.SetSkipLocalIP(systemConfig.SkipLocalIP)
 	}
 
 	if oldSysCfg.SilentMode != payload.SilentMode {
@@ -300,12 +383,13 @@ func handleUpdateUserConfig(w http.ResponseWriter, r *http.Request, repo *storag
 		CacheExpireMinutes:       settings.CacheExpireMinutes,
 		SyncTraffic:              settings.SyncTraffic,
 		EnableProbeBinding:       settings.EnableProbeBinding,
-		CustomRulesEnabled:       true, // 自定��规则始终启用
+		CustomRulesEnabled:       true, // 自定义规则始终启用
 		EnableShortLink:          payload.EnableShortLink,
 		TemplateVersion:          settings.TemplateVersion,
 		EnableProxyProvider:      settings.EnableProxyProvider,
 		NodeOrder:                settings.NodeOrder,
 		NodeNameFilter:           settings.NodeNameFilter,
+		AppendSubInfo:            settings.AppendSubInfo,
 		ProxyGroupsSourceURL:     proxyGroupsSourceURL,
 		ClientCompatibilityMode:  payload.ClientCompatibilityMode,
 		SilentMode:               payload.SilentMode,
@@ -316,6 +400,17 @@ func handleUpdateUserConfig(w http.ResponseWriter, r *http.Request, repo *storag
 		EnableSubTrafficHeader:   payload.EnableSubTrafficHeader,
 		EnableOverrideScripts:    payload.EnableOverrideScripts,
 		SubscriptionOutputFormat: subscriptionOutputFormat,
+		LoginRateMaxAttempts:     systemConfig.LoginRateMaxAttempts,
+		LoginRateWindow:          systemConfig.LoginRateWindow,
+		LoginRateLockDuration:    systemConfig.LoginRateLockDuration,
+		BruteForceEnabled:        systemConfig.BruteForceEnabled,
+		BruteForceMaxFailures:    systemConfig.BruteForceMaxFailures,
+		BruteForceWindow:         systemConfig.BruteForceWindow,
+		BruteForceBlockDuration:  systemConfig.BruteForceBlockDuration,
+		SubRateLimitEnabled:      systemConfig.SubRateLimitEnabled,
+		SubRateLimitMax:          systemConfig.SubRateLimitMax,
+		SubRateLimitWindow:       systemConfig.SubRateLimitWindow,
+		SkipLocalIP:             systemConfig.SkipLocalIP,
 	}
 
 	w.Header().Set("Content-Type", "application/json")

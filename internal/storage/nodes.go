@@ -42,6 +42,20 @@ func serializeNodeTags(node *Node) string {
 	return string(b)
 }
 
+func scanRelayGroupNodeIDs(node *Node, idsJSON string) {
+	if idsJSON != "" && idsJSON != "[]" {
+		_ = json.Unmarshal([]byte(idsJSON), &node.RelayGroupNodeIDs)
+	}
+}
+
+func serializeRelayGroupNodeIDs(ids []int64) string {
+	if len(ids) == 0 {
+		return "[]"
+	}
+	b, _ := json.Marshal(ids)
+	return string(b)
+}
+
 // HasAnyTag returns true if the node has at least one tag in the given set.
 func (n Node) HasAnyTag(tags map[string]bool) bool {
 	for _, t := range n.Tags {
@@ -92,7 +106,7 @@ func (r *TrafficRepository) ListNodes(ctx context.Context, username string) ([]N
 		return nil, errors.New("username is required")
 	}
 
-	rows, err := r.db.QueryContext(ctx, `SELECT id, username, raw_url, node_name, protocol, parsed_config, clash_config, enabled, COALESCE(tag, 'personal'), COALESCE(original_server, ''), COALESCE(probe_server, ''), COALESCE(tags, '[]'), chain_proxy_node_id, created_at, updated_at FROM nodes WHERE username = ? ORDER BY created_at DESC`, username)
+	rows, err := r.db.QueryContext(ctx, `SELECT id, username, raw_url, node_name, protocol, parsed_config, clash_config, enabled, COALESCE(tag, 'personal'), COALESCE(original_server, ''), COALESCE(probe_server, ''), COALESCE(tags, '[]'), chain_proxy_node_id, COALESCE(relay_group_name,''), COALESCE(relay_group_node_ids,'[]'), created_at, updated_at FROM nodes WHERE username = ? ORDER BY created_at DESC`, username)
 	if err != nil {
 		return nil, fmt.Errorf("list nodes: %w", err)
 	}
@@ -102,12 +116,13 @@ func (r *TrafficRepository) ListNodes(ctx context.Context, username string) ([]N
 	for rows.Next() {
 		var node Node
 		var enabled int
-		var tagsJSON string
-		if err := rows.Scan(&node.ID, &node.Username, &node.RawURL, &node.NodeName, &node.Protocol, &node.ParsedConfig, &node.ClashConfig, &enabled, &node.Tag, &node.OriginalServer, &node.ProbeServer, &tagsJSON, &node.ChainProxyNodeID, &node.CreatedAt, &node.UpdatedAt); err != nil {
+		var tagsJSON, relayGroupNodeIDsJSON string
+		if err := rows.Scan(&node.ID, &node.Username, &node.RawURL, &node.NodeName, &node.Protocol, &node.ParsedConfig, &node.ClashConfig, &enabled, &node.Tag, &node.OriginalServer, &node.ProbeServer, &tagsJSON, &node.ChainProxyNodeID, &node.RelayGroupName, &relayGroupNodeIDsJSON, &node.CreatedAt, &node.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("scan node: %w", err)
 		}
 		node.Enabled = enabled != 0
 		scanNodeTags(&node, tagsJSON)
+		scanRelayGroupNodeIDs(&node, relayGroupNodeIDsJSON)
 		nodes = append(nodes, node)
 	}
 
@@ -135,9 +150,9 @@ func (r *TrafficRepository) GetNode(ctx context.Context, id int64, username stri
 	}
 
 	var enabled int
-	var tagsJSON string
-	row := r.db.QueryRowContext(ctx, `SELECT id, username, raw_url, node_name, protocol, parsed_config, clash_config, enabled, COALESCE(tag, 'personal'), COALESCE(original_server, ''), COALESCE(probe_server, ''), COALESCE(tags, '[]'), chain_proxy_node_id, created_at, updated_at FROM nodes WHERE id = ? AND username = ? LIMIT 1`, id, username)
-	if err := row.Scan(&node.ID, &node.Username, &node.RawURL, &node.NodeName, &node.Protocol, &node.ParsedConfig, &node.ClashConfig, &enabled, &node.Tag, &node.OriginalServer, &node.ProbeServer, &tagsJSON, &node.ChainProxyNodeID, &node.CreatedAt, &node.UpdatedAt); err != nil {
+	var tagsJSON, relayGroupNodeIDsJSON string
+	row := r.db.QueryRowContext(ctx, `SELECT id, username, raw_url, node_name, protocol, parsed_config, clash_config, enabled, COALESCE(tag, 'personal'), COALESCE(original_server, ''), COALESCE(probe_server, ''), COALESCE(tags, '[]'), chain_proxy_node_id, COALESCE(relay_group_name,''), COALESCE(relay_group_node_ids,'[]'), created_at, updated_at FROM nodes WHERE id = ? AND username = ? LIMIT 1`, id, username)
+	if err := row.Scan(&node.ID, &node.Username, &node.RawURL, &node.NodeName, &node.Protocol, &node.ParsedConfig, &node.ClashConfig, &enabled, &node.Tag, &node.OriginalServer, &node.ProbeServer, &tagsJSON, &node.ChainProxyNodeID, &node.RelayGroupName, &relayGroupNodeIDsJSON, &node.CreatedAt, &node.UpdatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return node, ErrNodeNotFound
 		}
@@ -145,6 +160,7 @@ func (r *TrafficRepository) GetNode(ctx context.Context, id int64, username stri
 	}
 	node.Enabled = enabled != 0
 	scanNodeTags(&node, tagsJSON)
+	scanRelayGroupNodeIDs(&node, relayGroupNodeIDsJSON)
 
 	return node, nil
 }
@@ -185,7 +201,17 @@ func (r *TrafficRepository) CreateNode(ctx context.Context, node Node) (Node, er
 		enabled = 1
 	}
 
-	res, err := r.db.ExecContext(ctx, `INSERT INTO nodes (username, raw_url, node_name, protocol, parsed_config, clash_config, enabled, tag, tags, original_server, chain_proxy_node_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, node.Username, node.RawURL, node.NodeName, node.Protocol, node.ParsedConfig, node.ClashConfig, enabled, node.Tag, tagsJSON, node.OriginalServer, node.ChainProxyNodeID)
+	// 互斥：中转组和单链式代理不能同时存在
+	if len(node.RelayGroupNodeIDs) > 0 {
+		node.ChainProxyNodeID = nil
+	}
+	if node.ChainProxyNodeID != nil {
+		node.RelayGroupName = ""
+		node.RelayGroupNodeIDs = nil
+	}
+	relayGroupNodeIDsJSON := serializeRelayGroupNodeIDs(node.RelayGroupNodeIDs)
+
+	res, err := r.db.ExecContext(ctx, `INSERT INTO nodes (username, raw_url, node_name, protocol, parsed_config, clash_config, enabled, tag, tags, original_server, chain_proxy_node_id, relay_group_name, relay_group_node_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, node.Username, node.RawURL, node.NodeName, node.Protocol, node.ParsedConfig, node.ClashConfig, enabled, node.Tag, tagsJSON, node.OriginalServer, node.ChainProxyNodeID, node.RelayGroupName, relayGroupNodeIDsJSON)
 	if err != nil {
 		return Node{}, fmt.Errorf("create node: %w", err)
 	}
@@ -238,7 +264,17 @@ func (r *TrafficRepository) UpdateNode(ctx context.Context, node Node) (Node, er
 		enabled = 1
 	}
 
-	res, err := r.db.ExecContext(ctx, `UPDATE nodes SET raw_url = ?, node_name = ?, protocol = ?, parsed_config = ?, clash_config = ?, enabled = ?, tag = ?, tags = ?, original_server = ?, probe_server = ?, chain_proxy_node_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?`, node.RawURL, node.NodeName, node.Protocol, node.ParsedConfig, node.ClashConfig, enabled, node.Tag, tagsJSON, node.OriginalServer, node.ProbeServer, node.ChainProxyNodeID, node.ID, node.Username)
+	// 互斥：中转组和单链式代理不能同时存在
+	if len(node.RelayGroupNodeIDs) > 0 {
+		node.ChainProxyNodeID = nil
+	}
+	if node.ChainProxyNodeID != nil {
+		node.RelayGroupName = ""
+		node.RelayGroupNodeIDs = nil
+	}
+	relayGroupNodeIDsJSON := serializeRelayGroupNodeIDs(node.RelayGroupNodeIDs)
+
+	res, err := r.db.ExecContext(ctx, `UPDATE nodes SET raw_url = ?, node_name = ?, protocol = ?, parsed_config = ?, clash_config = ?, enabled = ?, tag = ?, tags = ?, original_server = ?, probe_server = ?, chain_proxy_node_id = ?, relay_group_name = ?, relay_group_node_ids = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?`, node.RawURL, node.NodeName, node.Protocol, node.ParsedConfig, node.ClashConfig, enabled, node.Tag, tagsJSON, node.OriginalServer, node.ProbeServer, node.ChainProxyNodeID, node.RelayGroupName, relayGroupNodeIDsJSON, node.ID, node.Username)
 	if err != nil {
 		return Node{}, fmt.Errorf("update node: %w", err)
 	}
@@ -295,6 +331,9 @@ func (r *TrafficRepository) DeleteNode(ctx context.Context, id int64, username s
 	// 清除引用了该节点作为中转节点的 chain_proxy_node_id
 	_, _ = r.db.ExecContext(ctx, `UPDATE nodes SET chain_proxy_node_id = NULL WHERE chain_proxy_node_id = ? AND username = ?`, id, username)
 
+	// 从其他节点的中转组成员中移除该节点；若中转组因此为空，清除整个中转组配置
+	r.pruneRelayGroupMember(ctx, id, username)
+
 	// 检查该 raw_url 是否还有其他节点使用
 	// 如果没有，则删除对应的外部订阅及其关联的代理集合配置
 	if rawURL != "" {
@@ -324,6 +363,54 @@ func (r *TrafficRepository) DeleteNode(ctx context.Context, id int64, username s
 	}
 
 	return nil
+}
+
+// pruneRelayGroupMember 在删除节点后，从同一用户其他节点的中转组成员列表中移除该节点 ID。
+// 若移除后某节点的中转组成员为空，则直接清除其整个中转组配置（relay_group_name + relay_group_node_ids），
+// 使该节点在生成订阅时回退为普通节点，避免悬空的中转组引用。
+func (r *TrafficRepository) pruneRelayGroupMember(ctx context.Context, deletedID int64, username string) {
+	rows, err := r.db.QueryContext(ctx, `SELECT id, relay_group_node_ids FROM nodes WHERE username = ? AND relay_group_node_ids != '' AND relay_group_node_ids != '[]'`, username)
+	if err != nil {
+		return
+	}
+	type pending struct {
+		id  int64
+		ids []int64
+	}
+	var updates []pending
+	for rows.Next() {
+		var nid int64
+		var idsJSON string
+		if err := rows.Scan(&nid, &idsJSON); err != nil {
+			continue
+		}
+		var ids []int64
+		if err := json.Unmarshal([]byte(idsJSON), &ids); err != nil {
+			continue
+		}
+		var filtered []int64
+		removed := false
+		for _, x := range ids {
+			if x == deletedID {
+				removed = true
+				continue
+			}
+			filtered = append(filtered, x)
+		}
+		if removed {
+			updates = append(updates, pending{id: nid, ids: filtered})
+		}
+	}
+	rows.Close()
+
+	for _, u := range updates {
+		if len(u.ids) == 0 {
+			// 中转组成员已全部删除：清除整个中转组配置
+			_, _ = r.db.ExecContext(ctx, `UPDATE nodes SET relay_group_name = '', relay_group_node_ids = '[]', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?`, u.id, username)
+		} else {
+			_, _ = r.db.ExecContext(ctx, `UPDATE nodes SET relay_group_node_ids = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND username = ?`, serializeRelayGroupNodeIDs(u.ids), u.id, username)
+		}
+	}
 }
 
 // DeleteNodeForSync removes a node without triggering external subscription cleanup.
@@ -376,7 +463,7 @@ func (r *TrafficRepository) BatchCreateNodes(ctx context.Context, nodes []Node) 
 	}
 	defer tx.Rollback()
 
-	stmt, err := tx.PrepareContext(ctx, `INSERT INTO nodes (username, raw_url, node_name, protocol, parsed_config, clash_config, enabled, tag, tags, original_server, chain_proxy_node_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+	stmt, err := tx.PrepareContext(ctx, `INSERT INTO nodes (username, raw_url, node_name, protocol, parsed_config, clash_config, enabled, tag, tags, original_server, chain_proxy_node_id, relay_group_name, relay_group_node_ids) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
 	if err != nil {
 		return nil, fmt.Errorf("prepare insert node: %w", err)
 	}
@@ -414,7 +501,8 @@ func (r *TrafficRepository) BatchCreateNodes(ctx context.Context, nodes []Node) 
 			enabled = 1
 		}
 
-		res, err := stmt.ExecContext(ctx, node.Username, node.RawURL, node.NodeName, node.Protocol, node.ParsedConfig, node.ClashConfig, enabled, node.Tag, tagsJSON, node.OriginalServer, node.ChainProxyNodeID)
+		relayGroupNodeIDsJSON := serializeRelayGroupNodeIDs(node.RelayGroupNodeIDs)
+		res, err := stmt.ExecContext(ctx, node.Username, node.RawURL, node.NodeName, node.Protocol, node.ParsedConfig, node.ClashConfig, enabled, node.Tag, tagsJSON, node.OriginalServer, node.ChainProxyNodeID, node.RelayGroupName, relayGroupNodeIDsJSON)
 		if err != nil {
 			return nil, fmt.Errorf("insert node %d: %w", idx+1, err)
 		}

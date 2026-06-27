@@ -53,12 +53,24 @@ interface UserConfig {
   silent_mode: boolean
   silent_mode_timeout: number
   node_name_filter: string
+  append_sub_info: boolean
   enable_sub_info_nodes: boolean
   sub_info_expire_prefix: string
   sub_info_traffic_prefix: string
   enable_sub_traffic_header: boolean
   enable_override_scripts: boolean
   subscription_output_format: string
+  login_rate_max_attempts: number
+  login_rate_window: number
+  login_rate_lock_duration: number
+  brute_force_enabled: boolean
+  brute_force_max_failures: number
+  brute_force_window: number
+  brute_force_block_duration: number
+  sub_rate_limit_enabled: boolean
+  sub_rate_limit_max: number
+  sub_rate_limit_window: number
+  skip_local_ip: boolean
 }
 
 export const Route = createFileRoute('/system-settings')({
@@ -89,12 +101,26 @@ function SystemSettingsPage() {
   const [silentMode, setSilentMode] = useState(false)
   const [silentModeTimeout, setSilentModeTimeout] = useState(15)
   const [nodeNameFilter, setNodeNameFilter] = useState('剩余|流量|到期|订阅|时间|重置')
+  const [appendSubInfo, setAppendSubInfo] = useState(false)
   const [enableSubInfoNodes, setEnableSubInfoNodes] = useState(false)
   const [subInfoExpirePrefix, setSubInfoExpirePrefix] = useState('📅过期时间')
   const [subInfoTrafficPrefix, setSubInfoTrafficPrefix] = useState('⌛剩余流量')
   const [enableSubTrafficHeader, setEnableSubTrafficHeader] = useState(true)
   const [enableOverrideScripts, setEnableOverrideScripts] = useState(false)
   const [subscriptionOutputFormat, setSubscriptionOutputFormat] = useState('yaml')
+
+  // 安全配置
+  const [loginRateMaxAttempts, setLoginRateMaxAttempts] = useState(5)
+  const [loginRateWindow, setLoginRateWindow] = useState(60)
+  const [loginRateLockDuration, setLoginRateLockDuration] = useState(60)
+  const [bruteForceEnabled, setBruteForceEnabled] = useState(true)
+  const [bruteForceMaxFailures, setBruteForceMaxFailures] = useState(5)
+  const [bruteForceWindow, setBruteForceWindow] = useState(1440)
+  const [bruteForceBlockDuration, setBruteForceBlockDuration] = useState(1440)
+  const [subRateLimitEnabled, setSubRateLimitEnabled] = useState(true)
+  const [subRateLimitMax, setSubRateLimitMax] = useState(30)
+  const [subRateLimitWindow, setSubRateLimitWindow] = useState(120)
+  const [skipLocalIP, setSkipLocalIP] = useState(true)
 
   // Notification config state
   const [notifyConfig, setNotifyConfig] = useState<NotifyConfig>({
@@ -191,12 +217,24 @@ function SystemSettingsPage() {
       setSilentMode(userConfig.silent_mode || false)
       setSilentModeTimeout(userConfig.silent_mode_timeout || 15)
       setNodeNameFilter(userConfig.node_name_filter ?? '剩余|流量|到期|订阅|时间|重置')
+      setAppendSubInfo(userConfig.append_sub_info || false)
       setEnableSubInfoNodes(userConfig.enable_sub_info_nodes || false)
       setSubInfoExpirePrefix(userConfig.sub_info_expire_prefix || '📅过期时间')
       setSubInfoTrafficPrefix(userConfig.sub_info_traffic_prefix || '⌛剩余流量')
       setEnableSubTrafficHeader(userConfig.enable_sub_traffic_header !== false)
       setEnableOverrideScripts(userConfig.enable_override_scripts || false)
       setSubscriptionOutputFormat(userConfig.subscription_output_format || 'yaml')
+      setLoginRateMaxAttempts(userConfig.login_rate_max_attempts || 5)
+      setLoginRateWindow(userConfig.login_rate_window || 60)
+      setLoginRateLockDuration(userConfig.login_rate_lock_duration || 60)
+      setBruteForceEnabled(userConfig.brute_force_enabled !== false)
+      setBruteForceMaxFailures(userConfig.brute_force_max_failures || 5)
+      setBruteForceWindow(userConfig.brute_force_window || 1440)
+      setBruteForceBlockDuration(userConfig.brute_force_block_duration || 1440)
+      setSubRateLimitEnabled(userConfig.sub_rate_limit_enabled !== false)
+      setSubRateLimitMax(userConfig.sub_rate_limit_max || 30)
+      setSubRateLimitWindow(userConfig.sub_rate_limit_window || 120)
+      setSkipLocalIP(userConfig.skip_local_ip !== false)
     }
   }, [userConfig])
 
@@ -225,12 +263,24 @@ function SystemSettingsPage() {
       setSilentMode(variables.silent_mode)
       setSilentModeTimeout(variables.silent_mode_timeout)
       setNodeNameFilter(variables.node_name_filter)
+      setAppendSubInfo(variables.append_sub_info)
       setEnableSubInfoNodes(variables.enable_sub_info_nodes)
       setSubInfoExpirePrefix(variables.sub_info_expire_prefix)
       setSubInfoTrafficPrefix(variables.sub_info_traffic_prefix)
       setEnableSubTrafficHeader(variables.enable_sub_traffic_header)
       setEnableOverrideScripts(variables.enable_override_scripts)
       setSubscriptionOutputFormat(variables.subscription_output_format || 'yaml')
+      setLoginRateMaxAttempts(variables.login_rate_max_attempts)
+      setLoginRateWindow(variables.login_rate_window)
+      setLoginRateLockDuration(variables.login_rate_lock_duration)
+      setBruteForceEnabled(variables.brute_force_enabled)
+      setBruteForceMaxFailures(variables.brute_force_max_failures)
+      setBruteForceWindow(variables.brute_force_window)
+      setBruteForceBlockDuration(variables.brute_force_block_duration)
+      setSubRateLimitEnabled(variables.sub_rate_limit_enabled)
+      setSubRateLimitMax(variables.sub_rate_limit_max)
+      setSubRateLimitWindow(variables.sub_rate_limit_window)
+      setSkipLocalIP(variables.skip_local_ip)
       toast.success('设置已更新')
     },
     onError: (error) => {
@@ -257,12 +307,24 @@ function SystemSettingsPage() {
       silent_mode: silentMode,
       silent_mode_timeout: silentModeTimeout,
       node_name_filter: nodeNameFilter,
+      append_sub_info: appendSubInfo,
       enable_sub_info_nodes: enableSubInfoNodes,
       sub_info_expire_prefix: subInfoExpirePrefix,
       sub_info_traffic_prefix: subInfoTrafficPrefix,
       enable_sub_traffic_header: enableSubTrafficHeader,
       enable_override_scripts: enableOverrideScripts,
       subscription_output_format: subscriptionOutputFormat,
+      login_rate_max_attempts: loginRateMaxAttempts,
+      login_rate_window: loginRateWindow,
+      login_rate_lock_duration: loginRateLockDuration,
+      brute_force_enabled: bruteForceEnabled,
+      brute_force_max_failures: bruteForceMaxFailures,
+      brute_force_window: bruteForceWindow,
+      brute_force_block_duration: bruteForceBlockDuration,
+      sub_rate_limit_enabled: subRateLimitEnabled,
+      sub_rate_limit_max: subRateLimitMax,
+      sub_rate_limit_window: subRateLimitWindow,
+      skip_local_ip: skipLocalIP,
       ...updates,
     })
   }
@@ -302,6 +364,28 @@ function SystemSettingsPage() {
                   id='sync-traffic'
                   checked={syncTraffic}
                   onCheckedChange={(checked) => updateConfig({ sync_traffic: checked })}
+                  disabled={loadingConfig || updateConfigMutation.isPending}
+                />
+              </div>
+
+              <div className='flex items-center justify-between'>
+                <div className='flex items-center gap-2'>
+                  <Label htmlFor='append-sub-info' className='cursor-pointer'>
+                    节点名称追加订阅信息
+                  </Label>
+                  <Tooltip>
+                    <TooltipTrigger asChild>
+                      <CircleHelp className='h-4 w-4 text-muted-foreground cursor-help' />
+                    </TooltipTrigger>
+                    <TooltipContent side='right' className='max-w-xs'>
+                      <p>开启后，同步外部订阅时在节点名称后追加剩余流量和剩余天数，例如：节点名 398.22GB📊 26Days⏳</p>
+                    </TooltipContent>
+                  </Tooltip>
+                </div>
+                <Switch
+                  id='append-sub-info'
+                  checked={appendSubInfo}
+                  onCheckedChange={(checked) => updateConfig({ append_sub_info: checked })}
                   disabled={loadingConfig || updateConfigMutation.isPending}
                 />
               </div>
@@ -918,6 +1002,122 @@ function SystemSettingsPage() {
                   </div>
                 )}
               </div>
+            </CardContent>
+          </Card>
+
+          {/* 安全配置 */}
+          <Card>
+            <CardHeader className='pb-4'>
+              <CardTitle>安全配置</CardTitle>
+              <CardDescription>配置登录保护、暴力探测封禁和订阅频率限制</CardDescription>
+            </CardHeader>
+            <CardContent className='space-y-6'>
+              {/* 不封禁本地 IP */}
+              <div className='flex items-start justify-between gap-4'>
+                <div className='flex-1'>
+                  <h4 className='text-sm font-medium'>不封禁本地 IP</h4>
+                  <p className='text-xs text-muted-foreground mt-1'>
+                    反代/Docker 场景下，若上游未传 X-Forwarded-For，主控可能将所有用户视作同一本机 IP — 一次封禁会让所有人连不上。开启后，loopback / 内网 / 私有网段 IP 跳过封禁与频率限制（登录账户维度仍生效）。
+                  </p>
+                </div>
+                <Switch checked={skipLocalIP} onCheckedChange={(v) => { setSkipLocalIP(v); updateConfig({ skip_local_ip: v }) }} disabled={loadingConfig || updateConfigMutation.isPending} />
+              </div>
+
+              <hr className='border-border/50' />
+
+              {/* 登录保护 */}
+              <div className='space-y-3'>
+                <h4 className='text-sm font-medium'>登录保护</h4>
+                <p className='text-xs text-muted-foreground'>限制登录失败次数，防止暴力破解密码</p>
+                <div className='grid grid-cols-1 sm:grid-cols-3 gap-3'>
+                  <div className='space-y-1'>
+                    <Label className='text-xs'>最大尝试次数</Label>
+                    <Input type='number' min={1} value={loginRateMaxAttempts} onChange={(e) => setLoginRateMaxAttempts(Number(e.target.value) || 5)} disabled={loadingConfig || updateConfigMutation.isPending} />
+                  </div>
+                  <div className='space-y-1'>
+                    <Label className='text-xs'>时间窗口 (分钟)</Label>
+                    <Input type='number' min={1} value={loginRateWindow} onChange={(e) => setLoginRateWindow(Number(e.target.value) || 60)} disabled={loadingConfig || updateConfigMutation.isPending} />
+                  </div>
+                  <div className='space-y-1'>
+                    <Label className='text-xs'>锁定时长 (分钟)</Label>
+                    <Input type='number' min={1} value={loginRateLockDuration} onChange={(e) => setLoginRateLockDuration(Number(e.target.value) || 60)} disabled={loadingConfig || updateConfigMutation.isPending} />
+                  </div>
+                </div>
+              </div>
+
+              <hr className='border-border/50' />
+
+              {/* 订阅暴力探测防护 */}
+              <div className='space-y-3'>
+                <div className='flex items-center justify-between'>
+                  <div>
+                    <h4 className='text-sm font-medium'>订阅暴力探测防护</h4>
+                    <p className='text-xs text-muted-foreground'>访问不存在的订阅链接多次后封禁 IP</p>
+                  </div>
+                  <Switch checked={bruteForceEnabled} onCheckedChange={(v) => { setBruteForceEnabled(v); updateConfig({ brute_force_enabled: v }) }} disabled={loadingConfig || updateConfigMutation.isPending} />
+                </div>
+                {bruteForceEnabled && (
+                  <div className='grid grid-cols-1 sm:grid-cols-3 gap-3'>
+                    <div className='space-y-1'>
+                      <Label className='text-xs'>最大失败次数</Label>
+                      <Input type='number' min={1} value={bruteForceMaxFailures} onChange={(e) => setBruteForceMaxFailures(Number(e.target.value) || 5)} disabled={loadingConfig || updateConfigMutation.isPending} />
+                    </div>
+                    <div className='space-y-1'>
+                      <Label className='text-xs'>统计窗口 (分钟)</Label>
+                      <Input type='number' min={1} value={bruteForceWindow} onChange={(e) => setBruteForceWindow(Number(e.target.value) || 1440)} disabled={loadingConfig || updateConfigMutation.isPending} />
+                    </div>
+                    <div className='space-y-1'>
+                      <Label className='text-xs'>封禁时长 (分钟)</Label>
+                      <Input type='number' min={1} value={bruteForceBlockDuration} onChange={(e) => setBruteForceBlockDuration(Number(e.target.value) || 1440)} disabled={loadingConfig || updateConfigMutation.isPending} />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <hr className='border-border/50' />
+
+              {/* 订阅频率限制 */}
+              <div className='space-y-3'>
+                <div className='flex items-center justify-between'>
+                  <div>
+                    <h4 className='text-sm font-medium'>订阅频率限制</h4>
+                    <p className='text-xs text-muted-foreground'>限制每个 IP 获取订阅的频率，防止枚举和抓取</p>
+                  </div>
+                  <Switch checked={subRateLimitEnabled} onCheckedChange={(v) => { setSubRateLimitEnabled(v); updateConfig({ sub_rate_limit_enabled: v }) }} disabled={loadingConfig || updateConfigMutation.isPending} />
+                </div>
+                {subRateLimitEnabled && (
+                  <div className='grid grid-cols-1 sm:grid-cols-2 gap-3'>
+                    <div className='space-y-1'>
+                      <Label className='text-xs'>最大请求次数</Label>
+                      <Input type='number' min={1} value={subRateLimitMax} onChange={(e) => setSubRateLimitMax(Number(e.target.value) || 30)} disabled={loadingConfig || updateConfigMutation.isPending} />
+                    </div>
+                    <div className='space-y-1'>
+                      <Label className='text-xs'>时间窗口 (分钟)</Label>
+                      <Input type='number' min={1} value={subRateLimitWindow} onChange={(e) => setSubRateLimitWindow(Number(e.target.value) || 120)} disabled={loadingConfig || updateConfigMutation.isPending} />
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <Button
+                className='w-full sm:w-auto'
+                onClick={() => updateConfig({
+                  login_rate_max_attempts: loginRateMaxAttempts,
+                  login_rate_window: loginRateWindow,
+                  login_rate_lock_duration: loginRateLockDuration,
+                  brute_force_enabled: bruteForceEnabled,
+                  brute_force_max_failures: bruteForceMaxFailures,
+                  brute_force_window: bruteForceWindow,
+                  brute_force_block_duration: bruteForceBlockDuration,
+                  sub_rate_limit_enabled: subRateLimitEnabled,
+                  sub_rate_limit_max: subRateLimitMax,
+                  sub_rate_limit_window: subRateLimitWindow,
+                  skip_local_ip: skipLocalIP,
+                })}
+                disabled={loadingConfig || updateConfigMutation.isPending}
+              >
+                保存安全配置
+              </Button>
             </CardContent>
           </Card>
 

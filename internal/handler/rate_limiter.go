@@ -11,6 +11,12 @@ import (
 // 使用英文错误消息, 防止老外看不懂
 var ErrRateLimited = errors.New("rate limit exceeded")
 
+var globalLoginRateLimiter *LoginRateLimiter
+
+func GetLoginRateLimiter() *LoginRateLimiter {
+	return globalLoginRateLimiter
+}
+
 type attemptInfo struct {
 	count     int
 	firstTime time.Time
@@ -18,31 +24,75 @@ type attemptInfo struct {
 }
 
 type LoginRateLimiter struct {
+	mu              sync.RWMutex
 	ipAttempts      sync.Map // IP -> *attemptInfo
 	accountAttempts sync.Map // username -> *attemptInfo
 	maxAttempts     int
 	windowDuration  time.Duration
 	lockDuration    time.Duration
+	skipLocalIP     bool
 }
 
 func NewLoginRateLimiter() *LoginRateLimiter {
-	// 1小时5次
-	return &LoginRateLimiter{
+	l := &LoginRateLimiter{
 		maxAttempts:    5,
 		windowDuration: time.Hour,
 		lockDuration:   time.Hour,
+		skipLocalIP:    true,
 	}
+	globalLoginRateLimiter = l
+	return l
+}
+
+func NewLoginRateLimiterWithConfig(maxAttempts, windowMinutes, lockMinutes int) *LoginRateLimiter {
+	l := &LoginRateLimiter{
+		maxAttempts:    maxAttempts,
+		windowDuration: time.Duration(windowMinutes) * time.Minute,
+		lockDuration:   time.Duration(lockMinutes) * time.Minute,
+		skipLocalIP:    true,
+	}
+	globalLoginRateLimiter = l
+	return l
+}
+
+func (l *LoginRateLimiter) UpdateConfig(maxAttempts, windowMinutes, lockMinutes int) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.maxAttempts = maxAttempts
+	l.windowDuration = time.Duration(windowMinutes) * time.Minute
+	l.lockDuration = time.Duration(lockMinutes) * time.Minute
+}
+
+func (l *LoginRateLimiter) getConfig() (int, time.Duration, time.Duration) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.maxAttempts, l.windowDuration, l.lockDuration
+}
+
+func (l *LoginRateLimiter) SetSkipLocalIP(skip bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.skipLocalIP = skip
+}
+
+func (l *LoginRateLimiter) shouldSkipIP(ip string) bool {
+	l.mu.RLock()
+	skip := l.skipLocalIP
+	l.mu.RUnlock()
+	return skip && IsLocalOrPrivateIP(ip)
 }
 
 func (l *LoginRateLimiter) Check(ip, username string) error {
 	now := time.Now()
 
-	if err := l.checkAttempts(&l.ipAttempts, ip, now); err != nil {
-		logger.Warn("🚫🚫🚫 [RATE_LIMIT] 登录被限制（IP）",
-			"ip", ip,
-			"username", username,
-		)
-		return err
+	if !l.shouldSkipIP(ip) {
+		if err := l.checkAttempts(&l.ipAttempts, ip, now); err != nil {
+			logger.Warn("🚫🚫🚫 [RATE_LIMIT] 登录被限制（IP）",
+				"ip", ip,
+				"username", username,
+			)
+			return err
+		}
 	}
 
 	if username != "" {
@@ -59,6 +109,8 @@ func (l *LoginRateLimiter) Check(ip, username string) error {
 }
 
 func (l *LoginRateLimiter) checkAttempts(store *sync.Map, key string, now time.Time) error {
+	maxAttempts, windowDuration, lockDuration := l.getConfig()
+
 	val, _ := store.Load(key)
 	if val == nil {
 		return nil
@@ -75,14 +127,13 @@ func (l *LoginRateLimiter) checkAttempts(store *sync.Map, key string, now time.T
 		return nil
 	}
 
-	if now.Sub(info.firstTime) > l.windowDuration {
+	if now.Sub(info.firstTime) > windowDuration {
 		store.Delete(key)
 		return nil
 	}
 
-	if info.count >= l.maxAttempts {
-		// Lock the key
-		info.lockUntil = now.Add(l.lockDuration)
+	if info.count >= maxAttempts {
+		info.lockUntil = now.Add(lockDuration)
 		return ErrRateLimited
 	}
 
@@ -92,13 +143,17 @@ func (l *LoginRateLimiter) checkAttempts(store *sync.Map, key string, now time.T
 func (l *LoginRateLimiter) RecordFailure(ip, username string) {
 	now := time.Now()
 
-	l.recordAttempt(&l.ipAttempts, ip, now)
+	if !l.shouldSkipIP(ip) {
+		l.recordAttempt(&l.ipAttempts, ip, now)
+	}
 	if username != "" {
 		l.recordAttempt(&l.accountAttempts, username, now)
 	}
 }
 
 func (l *LoginRateLimiter) recordAttempt(store *sync.Map, key string, now time.Time) {
+	_, windowDuration, _ := l.getConfig()
+
 	val, loaded := store.Load(key)
 	if !loaded {
 		store.Store(key, &attemptInfo{
@@ -110,7 +165,7 @@ func (l *LoginRateLimiter) recordAttempt(store *sync.Map, key string, now time.T
 
 	info := val.(*attemptInfo)
 
-	if now.Sub(info.firstTime) > l.windowDuration {
+	if now.Sub(info.firstTime) > windowDuration {
 		store.Store(key, &attemptInfo{
 			count:     1,
 			firstTime: now,

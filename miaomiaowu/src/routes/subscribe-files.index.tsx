@@ -32,7 +32,7 @@ import { Calendar } from '@/components/ui/calendar'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { cn } from '@/lib/utils'
 import { Copy } from 'lucide-react'
-import { Upload, Download, Edit, Settings, FileText, Save, Trash2, RefreshCw, ChevronDown, ChevronUp, ExternalLink, Eye, Calendar as CalendarIcon, Plus, Check, Ban } from 'lucide-react'
+import { Upload, Download, Edit, Settings, FileText, Save, Trash2, RefreshCw, ChevronDown, ChevronUp, ExternalLink, Eye, Calendar as CalendarIcon, Plus, Check, Ban, Info, Clock } from 'lucide-react'
 import { EditNodesDialog } from '@/components/edit-nodes-dialog'
 import { MobileEditNodesDialog } from '@/components/mobile-edit-nodes-dialog'
 import { Twemoji } from '@/components/twemoji'
@@ -61,6 +61,7 @@ type SubscribeFile = {
   selected_override_script_ids: number[]
   template_filename: string
   selected_tags: string[]
+  selected_node_ids?: number[]
   custom_short_code?: string
   raw_output: boolean
   traffic_limit?: number | null
@@ -313,6 +314,7 @@ function SubscribeFilesPage() {
   // 自定义连接Popover状态
   const [customLinkFileId, setCustomLinkFileId] = useState<number | null>(null)
   const [customLinkInput, setCustomLinkInput] = useState('')
+  const [userShortCodes, setUserShortCodes] = useState<Record<string, string>>({})
 
   // 编辑节点Dialog状态
   const [editNodesDialogOpen, setEditNodesDialogOpen] = useState(false)
@@ -362,10 +364,13 @@ function SubscribeFilesPage() {
     filename: '',
     template_filename: '',
     selected_tags: [] as string[],
+    selected_node_ids: [] as number[],
     expire: undefined as Date | undefined,
     traffic_limit: '' as string,
     stats_server_ids: '' as string,
   })
+  // 节点筛选模式:新订阅默认 node;编辑老订阅有 selected_tags 但无 selected_node_ids 时进 tag(向后兼容)
+  const [pickerMode, setPickerMode] = useState<'tag' | 'node'>('node')
 
   // 外部订阅卡片折叠状态 - 默认折叠
   const [isExternalSubsExpanded, setIsExternalSubsExpanded] = useState(false)
@@ -711,7 +716,31 @@ function SubscribeFilesPage() {
       toast.success('订阅信息已更新')
       setEditMetadataDialogOpen(false)
       setEditingMetadata(null)
-      setMetadataForm({ name: '', description: '', filename: '', template_filename: '', selected_tags: [], traffic_limit: '', stats_server_ids: '' })
+      setMetadataForm({ name: '', description: '', filename: '', template_filename: '', selected_tags: [], selected_node_ids: [], expire: undefined, traffic_limit: '', stats_server_ids: '' })
+    },
+    onError: (error: any) => {
+      toast.error(error.response?.data?.error || '更新失败')
+    },
+  })
+
+  // 查询订阅关联的用户短码
+  const subscriptionUsersQuery = useQuery({
+    queryKey: ['subscription-users', customLinkFileId],
+    queryFn: async () => {
+      const response = await api.get(`/api/admin/subscribe-files/${customLinkFileId}/users`)
+      return response.data.users as Array<{ username: string; user_short_code: string; custom_user_short_code: string }>
+    },
+    enabled: customLinkFileId !== null,
+  })
+
+  // 更新用户自定义短码
+  const updateUserShortCodeMutation = useMutation({
+    mutationFn: async (payload: { username: string; custom_short_code: string }) => {
+      await api.post('/api/admin/users/custom-short-code', payload)
+    },
+    onSuccess: (_data, variables) => {
+      toast.success(`${variables.username} 短链接已更新`)
+      queryClient.invalidateQueries({ queryKey: ['subscription-users', customLinkFileId] })
     },
     onError: (error: any) => {
       toast.error(error.response?.data?.error || '更新失败')
@@ -1573,16 +1602,21 @@ function SubscribeFilesPage() {
 
   const handleEditMetadata = (file: SubscribeFile) => {
     setEditingMetadata(file)
+    const nodeIDs = file.selected_node_ids || []
+    const tags = file.selected_tags || []
     setMetadataForm({
       name: file.name,
       description: file.description,
       filename: file.filename,
       template_filename: file.template_filename || '',
-      selected_tags: file.selected_tags || [],
+      selected_tags: tags,
+      selected_node_ids: nodeIDs,
       expire: file.expire_at ? new Date(file.expire_at) : undefined,
       traffic_limit: file.traffic_limit != null ? String(file.traffic_limit) : '',
       stats_server_ids: file.stats_server_ids || '',
     })
+    // 自动判 mode:有 node_ids → node 模式;只有 tags → tag 模式(老数据)
+    setPickerMode(nodeIDs.length > 0 ? 'node' : (tags.length > 0 ? 'tag' : 'node'))
     setEditMetadataDialogOpen(true)
   }
 
@@ -1603,7 +1637,9 @@ function SubscribeFilesPage() {
         description: metadataForm.description,
         filename: metadataForm.filename,
         template_filename: metadataForm.template_filename || null,
-        selected_tags: metadataForm.selected_tags,
+        // 节点 mode → 提交 node_ids 清空 tags;tag mode → 反之
+        selected_tags: pickerMode === 'node' ? [] : metadataForm.selected_tags,
+        selected_node_ids: pickerMode === 'node' ? metadataForm.selected_node_ids : [],
         expire_at: metadataForm.expire
           ? (() => {
               const endOfDay = new Date(metadataForm.expire)
@@ -1971,6 +2007,40 @@ function SubscribeFilesPage() {
             }
           }
         })
+
+        // 中转组：为有 relay_group_node_ids 的节点注入 dialer-proxy，按组名去重生成代理组
+        if (nodesQuery.data?.nodes) {
+          const relayGroupMap = new Map<string, { name: string; proxies: string[] }>()
+          nodesQuery.data.nodes.forEach((node: any) => {
+            if (node.relay_group_name && node.relay_group_node_ids?.length > 0) {
+              const proxy = parsed.proxies.find((p: any) => p.name === node.node_name)
+              if (proxy && !proxy['dialer-proxy']) {
+                proxy['dialer-proxy'] = node.relay_group_name
+              }
+              if (!relayGroupMap.has(node.relay_group_name)) {
+                const groupProxies = node.relay_group_node_ids
+                  .map((id: number) => nodeIDToName.get(id))
+                  .filter(Boolean) as string[]
+                if (groupProxies.length > 0) {
+                  relayGroupMap.set(node.relay_group_name, { name: node.relay_group_name, proxies: groupProxies })
+                }
+              }
+            }
+          })
+          if (relayGroupMap.size > 0) {
+            if (!parsed['proxy-groups']) parsed['proxy-groups'] = []
+            relayGroupMap.forEach(rg => {
+              parsed['proxy-groups'].push({
+                name: rg.name,
+                type: 'url-test',
+                proxies: rg.proxies,
+                url: 'http://www.gstatic.com/generate_204',
+                interval: 300,
+                tolerance: 50,
+              })
+            })
+          }
+        }
 
         for (const group of proxyGroups) {
           if (!group.dialerProxyGroup) continue
@@ -2647,31 +2717,18 @@ function SubscribeFilesPage() {
                     ),
                   },
                   {
-                    header: '说明',
+                    header: '',
                     cell: (file) => file.description ? (
                       <Tooltip>
                         <TooltipTrigger asChild>
-                          <span className='text-sm text-muted-foreground truncate block cursor-help'>
-                            {file.description}
-                          </span>
+                          <Info className='h-4 w-4 text-muted-foreground cursor-help' />
                         </TooltipTrigger>
                         <TooltipContent className='max-w-xs'>
                           {file.description}
                         </TooltipContent>
                       </Tooltip>
-                    ) : (
-                      <span className='text-sm text-muted-foreground'>-</span>
-                    ),
-                    cellClassName: 'max-w-[200px]'
-                  },
-                  {
-                    header: '最后更新',
-                    cell: (file) => (
-                      <span className='text-sm text-muted-foreground whitespace-nowrap'>
-                        {file.updated_at ? dateFormatter.format(new Date(file.updated_at)) : '-'}
-                      </span>
-                    ),
-                    width: '160px'
+                    ) : null,
+                    width: '36px'
                   },
                   {
                     header: '过期时间',
@@ -2907,10 +2964,12 @@ function SubscribeFilesPage() {
                                         size="sm"
                                         className={cn("justify-start text-xs h-8", isSelected && "bg-accent")}
                                         onClick={() => {
-                                          if (!isEnabled) return
                                           let newRuleIds: number[]
                                           let newScriptIds: number[]
-                                          if (totalSelected === 0) {
+                                          if (!isEnabled) {
+                                            newRuleIds = [rule.id]
+                                            newScriptIds = []
+                                          } else if (totalSelected === 0) {
                                             newRuleIds = enabledCustomRules.filter(r => r.id !== rule.id).map(r => r.id)
                                             newScriptIds = enabledOverrideScripts.map(s => s.id)
                                           } else {
@@ -2921,7 +2980,7 @@ function SubscribeFilesPage() {
                                             newRuleIds = []
                                             newScriptIds = []
                                           }
-                                          const allEmpty = newRuleIds.length === 0 && newScriptIds.length === 0 && totalSelected > 0
+                                          const allEmpty = newRuleIds.length === 0 && newScriptIds.length === 0
                                           updateMetadataMutation.mutate({
                                             id: file.id,
                                             data: {
@@ -2954,10 +3013,12 @@ function SubscribeFilesPage() {
                                         size="sm"
                                         className={cn("justify-start text-xs h-8", isSelected && "bg-accent")}
                                         onClick={() => {
-                                          if (!isEnabled) return
                                           let newScriptIds: number[]
                                           let newRuleIds: number[]
-                                          if (totalSelected === 0) {
+                                          if (!isEnabled) {
+                                            newScriptIds = [script.id]
+                                            newRuleIds = []
+                                          } else if (totalSelected === 0) {
                                             newScriptIds = enabledOverrideScripts.filter(s => s.id !== script.id).map(s => s.id)
                                             newRuleIds = enabledCustomRules.map(r => r.id)
                                           } else {
@@ -2968,7 +3029,7 @@ function SubscribeFilesPage() {
                                             newRuleIds = []
                                             newScriptIds = []
                                           }
-                                          const allEmpty = newRuleIds.length === 0 && newScriptIds.length === 0 && totalSelected > 0
+                                          const allEmpty = newRuleIds.length === 0 && newScriptIds.length === 0
                                           updateMetadataMutation.mutate({
                                             id: file.id,
                                             data: {
@@ -3009,6 +3070,7 @@ function SubscribeFilesPage() {
                             if (open) {
                               setCustomLinkFileId(file.id)
                               setCustomLinkInput(code)
+                              setUserShortCodes({})
                             } else {
                               setCustomLinkFileId(null)
                             }
@@ -3028,9 +3090,9 @@ function SubscribeFilesPage() {
                               )}
                             </Button>
                           </PopoverTrigger>
-                          <PopoverContent className="w-[200px] p-3" align="start">
+                          <PopoverContent className="w-[280px] p-3" align="start">
                             <div className="space-y-2">
-                              <p className="text-xs text-muted-foreground">仅字母数字</p>
+                              <p className="text-xs text-muted-foreground">订阅短链接（仅字母数字）</p>
                               <Input
                                 value={customLinkInput}
                                 onChange={(e) => setCustomLinkInput(e.target.value)}
@@ -3074,7 +3136,7 @@ function SubscribeFilesPage() {
                                           name: file.name,
                                           description: file.description,
                                           auto_sync_custom_rules: file.auto_sync_custom_rules,
-                                          custom_short_code: null,
+                                          custom_short_code: '',
                                         }
                                       }, {
                                         onSuccess: () => {
@@ -3089,6 +3151,46 @@ function SubscribeFilesPage() {
                                 )}
                               </div>
                             </div>
+                            {subscriptionUsersQuery.data && subscriptionUsersQuery.data.length > 0 && (
+                              <div className="mt-3 pt-3 border-t space-y-2">
+                                <p className="text-xs text-muted-foreground">用户短链接</p>
+                                {subscriptionUsersQuery.data.map((user) => {
+                                  const currentValue = userShortCodes[user.username] ?? (user.custom_user_short_code || user.user_short_code)
+                                  return (
+                                    <div key={user.username} className="space-y-1">
+                                      <Label className="text-xs font-normal text-muted-foreground">{user.username}</Label>
+                                      <div className="flex gap-1">
+                                        <Input
+                                          value={currentValue}
+                                          onChange={(e) => setUserShortCodes(prev => ({ ...prev, [user.username]: e.target.value }))}
+                                          placeholder="用户短码"
+                                          className="h-7 text-xs font-mono flex-1"
+                                        />
+                                        <Button
+                                          size="sm"
+                                          className="h-7 text-xs px-2"
+                                          disabled={updateUserShortCodeMutation.isPending}
+                                          onClick={() => {
+                                            const val = (userShortCodes[user.username] ?? currentValue).trim()
+                                            updateUserShortCodeMutation.mutate({
+                                              username: user.username,
+                                              custom_short_code: val,
+                                            })
+                                          }}
+                                        >
+                                          保存
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  )
+                                })}
+                              </div>
+                            )}
+                            {subscriptionUsersQuery.isLoading && (
+                              <div className="mt-3 pt-3 border-t">
+                                <p className="text-xs text-muted-foreground text-center">加载中...</p>
+                              </div>
+                            )}
                           </PopoverContent>
                         </Popover>
                       )
@@ -3414,6 +3516,20 @@ function SubscribeFilesPage() {
                     headerClassName: 'text-center',
                     cellClassName: 'text-center',
                     width: '110px',
+                  },
+                  {
+                    header: '',
+                    cell: (file) => file.updated_at ? (
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Clock className='h-4 w-4 text-muted-foreground cursor-help' />
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          {dateFormatter.format(new Date(file.updated_at))}
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : null,
+                    width: '36px'
                   },
                   {
                     header: '操作',
@@ -5145,10 +5261,35 @@ function SubscribeFilesPage() {
                 绑定模板后，获取订阅时将根据模板动态生成配置。绑定模板会自动禁用覆写开关。
               </p>
             </div>
-            {/* 节点标签选择（仅绑定模板时显示） */}
+            {/* 节点选择(绑定模板时显示):新模式 node mode(按 tag 分组列节点),老模式 tag mode(按标签筛) */}
             {metadataForm.template_filename && (
               <div className='space-y-2'>
-                <Label>节点标签筛选</Label>
+                <div className='flex items-center justify-between gap-2'>
+                  <Label>节点筛选</Label>
+                  <div className='inline-flex rounded-md border text-xs'>
+                    <button
+                      type='button'
+                      className={cn('px-2 py-0.5 rounded-l-md', pickerMode === 'node' ? 'bg-accent text-foreground' : 'text-muted-foreground')}
+                      onClick={() => setPickerMode('node')}
+                    >
+                      节点选择
+                    </button>
+                    <button
+                      type='button'
+                      className={cn('px-2 py-0.5 rounded-r-md border-l', pickerMode === 'tag' ? 'bg-accent text-foreground' : 'text-muted-foreground')}
+                      onClick={() => setPickerMode('tag')}
+                    >
+                      按标签筛选(兼容)
+                    </button>
+                  </div>
+                </div>
+                {pickerMode === 'node' ? (
+                  <NodePickerByTag
+                    allNodes={(allNodesData?.nodes ?? []) as Array<{ id: number; node_name: string; tag?: string; protocol?: string }>}
+                    selectedIds={metadataForm.selected_node_ids}
+                    onChange={(ids) => setMetadataForm({ ...metadataForm, selected_node_ids: ids })}
+                  />
+                ) : (
                 <Popover>
                   <PopoverTrigger asChild>
                     <Button
@@ -5201,8 +5342,11 @@ function SubscribeFilesPage() {
                     </div>
                   </PopoverContent>
                 </Popover>
+                )}
                 <p className='text-xs text-muted-foreground'>
-                  选择节点标签后，生成订阅时只使用选中标签的节点。不选择则使用全部节点。
+                  {pickerMode === 'node'
+                    ? '选中具体节点;同时顶层 proxies 会自动裁掉未被代理组引用的孤儿。不选 = 使用全部节点。'
+                    : '兼容模式:按标签筛选节点。不选则使用全部节点(老订阅自动进此模式)。'}
                 </p>
               </div>
             )}
@@ -6264,5 +6408,86 @@ function SubscribeFilesPage() {
         </DialogContent>
       </Dialog>
     </main>
+  )
+}
+
+// NodePickerByTag:按节点 tag 分组列出全部节点;点 tag 标题 = 切换该 tag 下所有节点的勾选(用户原话"点击标签快速选中标签下所有节点")
+// 存储模型:selected_node_ids(精确节点 ID);后端按 ID 过滤,不再依赖 tag。
+function NodePickerByTag({
+  allNodes,
+  selectedIds,
+  onChange,
+}: {
+  allNodes: Array<{ id: number; node_name: string; tag?: string; protocol?: string }>
+  selectedIds: number[]
+  onChange: (ids: number[]) => void
+}) {
+  const selected = new Set(selectedIds)
+  // 按 tag 分组(无 tag 落到"未分类")
+  const groups = new Map<string, Array<{ id: number; node_name: string; protocol?: string }>>()
+  for (const n of allNodes) {
+    const key = (n.tag || '').trim() || '未分类'
+    const arr = groups.get(key) || []
+    arr.push({ id: n.id, node_name: n.node_name, protocol: n.protocol })
+    groups.set(key, arr)
+  }
+  const setIds = (next: number[]) => onChange(next)
+  const toggleNode = (id: number) => {
+    const s = new Set(selected)
+    if (s.has(id)) s.delete(id)
+    else s.add(id)
+    setIds(Array.from(s))
+  }
+  const toggleGroupAll = (members: Array<{ id: number }>) => {
+    const s = new Set(selected)
+    const allIn = members.every((n) => s.has(n.id))
+    if (allIn) members.forEach((n) => s.delete(n.id))
+    else members.forEach((n) => s.add(n.id))
+    setIds(Array.from(s))
+  }
+
+  if (allNodes.length === 0) {
+    return <div className='text-xs text-muted-foreground border rounded-md p-3 text-center'>暂无节点</div>
+  }
+
+  return (
+    <div className='space-y-1'>
+      <div className='flex items-center justify-between text-xs text-muted-foreground'>
+        <span>共 {allNodes.length} 个节点</span>
+        <span className='tabular-nums'>已选 {selected.size}</span>
+      </div>
+      <div className='border rounded-md max-h-64 overflow-y-auto divide-y'>
+        {Array.from(groups.entries()).map(([tag, members]) => {
+          const allIn = members.every((n) => selected.has(n.id))
+          return (
+            <div key={tag} className='p-2 space-y-1'>
+              <div className='flex items-center justify-between'>
+                <button
+                  type='button'
+                  className='flex items-center gap-1.5 text-sm font-medium hover:text-primary'
+                  onClick={() => toggleGroupAll(members)}
+                  title='点击切换该标签下所有节点'
+                >
+                  <Checkbox checked={allIn} />
+                  {tag}
+                </button>
+                <span className='text-[10px] text-muted-foreground tabular-nums'>
+                  {members.filter((n) => selected.has(n.id)).length}/{members.length}
+                </span>
+              </div>
+              <div className='pl-5 grid grid-cols-1 sm:grid-cols-2 gap-y-1'>
+                {members.map((n) => (
+                  <label key={n.id} className='flex items-center gap-1.5 text-xs cursor-pointer'>
+                    <Checkbox checked={selected.has(n.id)} onCheckedChange={() => toggleNode(n.id)} />
+                    <span className='truncate' title={n.node_name}>{n.node_name}</span>
+                    {n.protocol && <span className='text-[9px] uppercase text-muted-foreground shrink-0'>{n.protocol}</span>}
+                  </label>
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    </div>
   )
 }

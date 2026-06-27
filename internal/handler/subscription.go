@@ -21,7 +21,7 @@ import (
 	"miaomiaowu/internal/publicpath"
 	"miaomiaowu/internal/scriptengine"
 	"miaomiaowu/internal/storage"
-	"miaomiaowu/internal/substore"
+	"github.com/MMWOrg/mmwX-plugins/proxyparser/substore"
 
 	"gopkg.in/yaml.v3"
 )
@@ -181,12 +181,8 @@ func (s *subscriptionEndpoint) authorizeRequest(w http.ResponseWriter, r *http.R
 		return r, true
 	}
 
-	// Check for username parameter (from composite short link - already authenticated by short link handler)
-	queryUsername := strings.TrimSpace(r.URL.Query().Get("username"))
-	if queryUsername != "" {
-		ctx := auth.ContextWithUsername(r.Context(), queryUsername)
-		return r.WithContext(ctx), true
-	}
+	// username parameter is only trusted when injected internally (e.g. short link handler sets context directly).
+	// Never trust username from external query string — skip it here.
 
 	// Check for token parameter (legacy/direct access)
 	queryToken := strings.TrimSpace(r.URL.Query().Get("token"))
@@ -289,6 +285,18 @@ func (h *SubscriptionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	logger.Info("[⏱️ 耗时监测] 文件查找完成", "step", "file_lookup", "duration_ms", time.Since(stepStart).Milliseconds(), "filename", filename)
+
+	// 权限校验：验证用户是否有权访问该订阅文件
+	if username != "" && hasSubscribeFile && h.repo != nil {
+		hasAccess, err := h.repo.UserHasAccessToSubscribeFile(r.Context(), username, subscribeFile.ID)
+		if err != nil {
+			logger.Info("[Security] 权限校验失败", "username", username, "filename", filename, "error", err)
+		} else if !hasAccess {
+			logger.Info("[Security] 用户无权访问订阅文件", "username", username, "filename", filename, "subscribe_file_id", subscribeFile.ID)
+			writeError(w, http.StatusNotFound, errors.New("not found"))
+			return
+		}
+	}
 
 	cleanedName := filepath.Clean(filename)
 	if strings.HasPrefix(cleanedName, "..") || filepath.IsAbs(cleanedName) {
@@ -668,11 +676,14 @@ func (h *SubscriptionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 			if sysCfg, err := h.repo.GetSystemConfig(r.Context()); err == nil && sysCfg.EnableOverrideScripts {
 				selectedScriptIDs := makeIDSet(subscribeFile.SelectedOverrideScriptIDs)
 				scripts, _ := h.repo.ListOverrideScripts(r.Context(), username, "post_fetch")
+				logger.Info("[OverrideScript] 开始执行覆写脚本", "total_scripts", len(scripts), "selected_ids", subscribeFile.SelectedOverrideScriptIDs)
 				for _, s := range scripts {
 					if !s.Enabled {
+						logger.Info("[OverrideScript] 跳过未启用的脚本", "script", s.Name, "id", s.ID)
 						continue
 					}
 					if len(selectedScriptIDs) > 0 && !selectedScriptIDs[s.ID] {
+						logger.Info("[OverrideScript] 跳过未选中的脚本", "script", s.Name, "id", s.ID)
 						continue
 					}
 					modified, err := h.runPostFetchScript(r.Context(), s.Content, data)
@@ -680,10 +691,15 @@ func (h *SubscriptionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 						logger.Info("[OverrideScript] post_fetch 脚本执行失败", "script", s.Name, "error", err)
 						continue
 					}
+					logger.Info("[OverrideScript] post_fetch 脚本执行成功", "script", s.Name, "id", s.ID, "input_bytes", len(data), "output_bytes", len(modified))
 					data = modified
 				}
+			} else {
+				logger.Info("[OverrideScript] 覆写脚本功能未启用", "enable_override_scripts", sysCfg.EnableOverrideScripts, "err", err)
 			}
 		}
+	} else if hasSubscribeFile {
+		logger.Info("[OverrideScript] 订阅文件未开启自动应用", "auto_sync_custom_rules", subscribeFile.AutoSyncCustomRules)
 	}
 	logger.Info("[⏱️ 耗时监测] 覆写脚本执行完成", "step", "override_script", "duration_ms", time.Since(stepStart).Milliseconds())
 
@@ -701,14 +717,16 @@ func (h *SubscriptionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 	// 格式转换
 	stepStart = time.Now()
-	// 根��参数t的类型调用substore的转换代码
+	// 根据参数t的类型调用substore的转换代码
 	clientType := strings.TrimSpace(r.URL.Query().Get("t"))
-	// 默认浏览器打开时直接��入文本, 不再下载问卷
+	// 默认浏览器打开时直接输出文本, 不再下载文件
 	contentType := "text/yaml; charset=utf-8; charset=UTF-8"
 	ext := filepath.Ext(filename)
 	if ext == "" {
 		ext = ".yaml"
 	}
+
+	data = deduplicateProxies(data, username)
 
 	// clash/classmeta/clash-to-shadowrocket 直接输出 Clash YAML, 不需要转换
 	if clientType != "" && clientType != "clash" && clientType != "clashmeta" && clientType != "clash-to-shadowrocket" {
@@ -721,7 +739,7 @@ func (h *SubscriptionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 
 		// Set content type and extension based on client type
 		switch clientType {
-		case "surge", "surgemac", "loon", "qx", "surfboard", "shadowrocket", "clash-to-surge":
+		case "surge", "surgemac", "loon", "qx", "surfboard", "shadowrocket", "clash-to-surge", "clash-to-loon", "clash-to-loon-kelee":
 			contentType = "text/plain; charset=utf-8"
 			ext = ".txt"
 		case "sing-box":
@@ -824,6 +842,13 @@ func (h *SubscriptionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) 
 				// 兼容旧链式代理配置：如果存在 "🌄 落地节点" 和 "🌠 中转节点" 代理组，
 				// 给落地节点组内的节点自动添加 dialer-proxy: 🌠 中转节点
 				injectLegacyDialerProxy(rootMap)
+
+				// 中转组：从数据库获取节点的中转组配置，注入 dialer-proxy 和代理组
+				// 模板路径(fromTemplate)已在 generateFromTemplate 内注入过中转组，
+				// 此处再注入会导致重复，故仅在非模板路径执行。
+				if username != "" && h.repo != nil && !fromTemplate {
+					injectRelayGroups(r.Context(), h.repo, username, rootMap)
+				}
 
 				// 查找 rule-providers 的位置
 				ruleProvidersIdx := -1
@@ -1325,7 +1350,7 @@ func (h *SubscriptionHandler) serveTokenInvalidResponse(w http.ResponseWriter, r
 
 			// 根据客户端类型设置content type和扩展名
 			switch clientType {
-			case "surge", "surgemac", "loon", "qx", "surfboard", "shadowrocket", "clash-to-surge":
+			case "surge", "surgemac", "loon", "qx", "surfboard", "shadowrocket", "clash-to-surge", "clash-to-loon", "clash-to-loon-kelee":
 				contentType = "text/plain; charset=utf-8"
 				ext = ".txt"
 			case "sing-box":
@@ -1420,6 +1445,20 @@ func (h *SubscriptionHandler) convertSubscription(ctx context.Context, yamlData 
 	// clash-to-surge 类型使用 BuildCompleteSurgeConfig 生成完整的 Surge 配置
 	if clientType == "clash-to-surge" {
 		return h.convertClashToSurge(config, proxies)
+	}
+
+	// clash-to-loon 类型使用 BuildCompleteLoonConfig 生成完整的 Loon 配置
+	if clientType == "clash-to-loon" {
+		return h.convertClashToLoon(config, proxies)
+	}
+
+	// clash-to-loon-kelee 使用 kelee 模板，只填充 Proxy 节点
+	if clientType == "clash-to-loon-kelee" {
+		result, err := substore.BuildLoonKeleeConfig(proxies)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build Loon kelee config: %w", err)
+		}
+		return []byte(result), nil
 	}
 
 	factory := substore.GetDefaultFactory()
@@ -1580,6 +1619,107 @@ func (h *SubscriptionHandler) convertClashToSurge(config map[string]interface{},
 	}
 
 	return []byte(surgeConfig), nil
+}
+
+// convertClashToLoon converts Clash config to Loon format with full config
+func (h *SubscriptionHandler) convertClashToLoon(config map[string]interface{}, proxies []substore.Proxy) ([]byte, error) {
+	clashConfig := &substore.ClashConfig{}
+
+	if port, ok := config["port"].(int); ok {
+		clashConfig.Port = port
+	}
+	if socksPort, ok := config["socks-port"].(int); ok {
+		clashConfig.SocksPort = socksPort
+	}
+	if allowLan, ok := config["allow-lan"].(bool); ok {
+		clashConfig.AllowLan = allowLan
+	}
+	if mode, ok := config["mode"].(string); ok {
+		clashConfig.Mode = mode
+	}
+	if logLevel, ok := config["log-level"].(string); ok {
+		clashConfig.LogLevel = logLevel
+	}
+
+	// 解析 proxy-groups
+	if groupsRaw, ok := config["proxy-groups"].([]interface{}); ok {
+		for _, g := range groupsRaw {
+			if gMap, ok := g.(map[string]interface{}); ok {
+				group := substore.ClashProxyGroup{}
+				if name, ok := gMap["name"].(string); ok {
+					group.Name = name
+				}
+				if gType, ok := gMap["type"].(string); ok {
+					group.Type = gType
+				}
+				if url, ok := gMap["url"].(string); ok {
+					group.URL = url
+				}
+				if interval, ok := gMap["interval"].(int); ok {
+					group.Interval = interval
+				}
+				if tolerance, ok := gMap["tolerance"].(int); ok {
+					group.Tolerance = tolerance
+				}
+				if strategy, ok := gMap["strategy"].(string); ok {
+					group.Strategy = strategy
+				}
+				if proxiesArr, ok := gMap["proxies"].([]interface{}); ok {
+					for _, p := range proxiesArr {
+						if pStr, ok := p.(string); ok {
+							group.Proxies = append(group.Proxies, pStr)
+						}
+					}
+				}
+				clashConfig.ProxyGroups = append(clashConfig.ProxyGroups, group)
+			}
+		}
+	}
+
+	// 解析 rules
+	if rulesRaw, ok := config["rules"].([]interface{}); ok {
+		for _, r := range rulesRaw {
+			if rStr, ok := r.(string); ok {
+				clashConfig.Rules = append(clashConfig.Rules, rStr)
+			}
+		}
+	}
+
+	// 解析 rule-providers
+	if providersRaw, ok := config["rule-providers"].(map[string]interface{}); ok {
+		clashConfig.RuleProviders = make(map[string]substore.ClashRuleProvider)
+		for name, p := range providersRaw {
+			if pMap, ok := p.(map[string]interface{}); ok {
+				provider := substore.ClashRuleProvider{}
+				if pType, ok := pMap["type"].(string); ok {
+					provider.Type = pType
+				}
+				if behavior, ok := pMap["behavior"].(string); ok {
+					provider.Behavior = behavior
+				}
+				if url, ok := pMap["url"].(string); ok {
+					provider.URL = url
+				}
+				if path, ok := pMap["path"].(string); ok {
+					provider.Path = path
+				}
+				if interval, ok := pMap["interval"].(int); ok {
+					provider.Interval = interval
+				}
+				if format, ok := pMap["format"].(string); ok {
+					provider.Format = format
+				}
+				clashConfig.RuleProviders[name] = provider
+			}
+		}
+	}
+
+	loonConfig, err := substore.BuildCompleteLoonConfig(clashConfig, proxies)
+	if err != nil {
+		return nil, fmt.Errorf("failed to build Loon config: %w", err)
+	}
+
+	return []byte(loonConfig), nil
 }
 
 // fixWireGuardAllowedIPs fixes allowed-ips field type for WireGuard nodes
@@ -1878,6 +2018,137 @@ func injectLegacyDialerProxy(rootMap *yaml.Node) {
 	}
 }
 
+func injectRelayGroups(ctx context.Context, repo *storage.TrafficRepository, username string, rootMap *yaml.Node) {
+	nodes, err := repo.ListNodes(ctx, username)
+	if err != nil {
+		return
+	}
+
+	nodeByID := make(map[int64]storage.Node, len(nodes))
+	for _, n := range nodes {
+		nodeByID[n.ID] = n
+	}
+
+	// 定位订阅文件中的 proxies 序列，并收集已存在的节点名（落地节点）
+	var proxiesNode *yaml.Node
+	for i := 0; i < len(rootMap.Content); i += 2 {
+		if rootMap.Content[i].Value == "proxies" {
+			if rootMap.Content[i+1].Kind == yaml.SequenceNode {
+				proxiesNode = rootMap.Content[i+1]
+			}
+			break
+		}
+	}
+	if proxiesNode == nil {
+		return
+	}
+	existingNames := make(map[string]bool)
+	for _, pn := range proxiesNode.Content {
+		if pn.Kind == yaml.MappingNode {
+			existingNames[yamlMapGet(pn, "name")] = true
+		}
+	}
+
+	// 仅处理“落地（源）节点已存在于订阅中”的中转组：
+	// 注入 dialer-proxy、按需把缺失的底层节点补入 proxies、生成中转代理组
+	type relayInfo struct {
+		groupName string
+		proxies   []string
+	}
+	relayMap := make(map[string]*relayInfo)
+	relayBySource := make(map[string]string) // 源节点名 -> 组名
+	for _, n := range nodes {
+		if n.RelayGroupName == "" || len(n.RelayGroupNodeIDs) == 0 {
+			continue
+		}
+		if !existingNames[n.NodeName] {
+			continue // 落地节点不在订阅里，不插入中转组
+		}
+		relayBySource[n.NodeName] = n.RelayGroupName
+		if _, exists := relayMap[n.RelayGroupName]; exists {
+			continue
+		}
+		var members []string
+		for _, rid := range n.RelayGroupNodeIDs {
+			member, ok := nodeByID[rid]
+			if !ok || !member.Enabled {
+				continue // 底层节点已删除或被禁用：剔除，避免悬空引用
+			}
+			members = append(members, member.NodeName)
+			// 底层节点定义若不在订阅里，从节点表补入根 proxies
+			if !existingNames[member.NodeName] {
+				var pc map[string]any
+				if err := json.Unmarshal([]byte(member.ClashConfig), &pc); err != nil {
+					continue
+				}
+				pc["name"] = member.NodeName
+				proxiesNode.Content = append(proxiesNode.Content, mapToYAMLNode(pc))
+				existingNames[member.NodeName] = true
+			}
+		}
+		if len(members) > 0 {
+			relayMap[n.RelayGroupName] = &relayInfo{groupName: n.RelayGroupName, proxies: members}
+		}
+	}
+	if len(relayMap) == 0 {
+		return
+	}
+
+	// 给落地（源）节点注入 dialer-proxy
+	for _, proxyNode := range proxiesNode.Content {
+		if proxyNode.Kind != yaml.MappingNode {
+			continue
+		}
+		groupName, ok := relayBySource[yamlMapGet(proxyNode, "name")]
+		if !ok {
+			continue
+		}
+		if yamlMapGet(proxyNode, "dialer-proxy") != "" {
+			continue
+		}
+		proxyNode.Content = append(proxyNode.Content,
+			&yaml.Node{Kind: yaml.ScalarNode, Value: "dialer-proxy"},
+			&yaml.Node{Kind: yaml.ScalarNode, Value: groupName},
+		)
+	}
+
+	// 追加中转代理组到 proxy-groups
+	for i := 0; i < len(rootMap.Content); i += 2 {
+		if rootMap.Content[i].Value != "proxy-groups" {
+			continue
+		}
+		groupsNode := rootMap.Content[i+1]
+		if groupsNode.Kind != yaml.SequenceNode {
+			break
+		}
+		for _, r := range relayMap {
+			groupNode := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+			groupNode.Content = append(groupNode.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Value: "name"},
+				&yaml.Node{Kind: yaml.ScalarNode, Value: r.groupName},
+				&yaml.Node{Kind: yaml.ScalarNode, Value: "type"},
+				&yaml.Node{Kind: yaml.ScalarNode, Value: "url-test"},
+				&yaml.Node{Kind: yaml.ScalarNode, Value: "url"},
+				&yaml.Node{Kind: yaml.ScalarNode, Value: "http://www.gstatic.com/generate_204"},
+				&yaml.Node{Kind: yaml.ScalarNode, Value: "interval"},
+				&yaml.Node{Kind: yaml.ScalarNode, Value: "300", Tag: "!!int"},
+				&yaml.Node{Kind: yaml.ScalarNode, Value: "tolerance"},
+				&yaml.Node{Kind: yaml.ScalarNode, Value: "50", Tag: "!!int"},
+			)
+			proxiesSeq := &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
+			for _, p := range r.proxies {
+				proxiesSeq.Content = append(proxiesSeq.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: p})
+			}
+			groupNode.Content = append(groupNode.Content,
+				&yaml.Node{Kind: yaml.ScalarNode, Value: "proxies"},
+				proxiesSeq,
+			)
+			groupsNode.Content = append(groupsNode.Content, groupNode)
+		}
+		break
+	}
+}
+
 // yamlMapGet 从 MappingNode 中读取指定 key 的字符串值
 func yamlMapGet(node *yaml.Node, key string) string {
 	for i := 0; i < len(node.Content)-1; i += 2 {
@@ -2085,25 +2356,20 @@ func (h *SubscriptionHandler) generateFromTemplate(ctx context.Context, username
 
 	// 构建节点 ID -> 名称映射（用于链式代理解析）
 	nodeIDToName := make(map[int64]string, len(nodes))
+	// 构建节点 ID -> 节点映射（用于中转组底层节点补全）
+	nodeByID := make(map[int64]storage.Node, len(nodes))
 	for _, node := range nodes {
 		nodeIDToName[node.ID] = node.NodeName
+		nodeByID[node.ID] = node
 	}
 
-	// 将节点转换为 proxies 格式（[]map[string]any）
-	var proxies []map[string]any
-	for _, node := range nodes {
-		if !node.Enabled {
-			continue // 跳过禁用的节点
-		}
-		// 标签过滤：只使用选中标签的节点
-		if hasTagFilter && !node.HasAnyTag(selectedTagsMap) {
-			continue
-		}
+	// buildProxyConfig 解析节点的 ClashConfig 并注入链式/中转代理的 dialer-proxy
+	buildProxyConfig := func(node storage.Node) (map[string]any, bool) {
 		// ClashConfig 是 JSON 格式的字符串，需要解析
 		var proxyConfig map[string]any
 		if err := json.Unmarshal([]byte(node.ClashConfig), &proxyConfig); err != nil {
 			logger.Info("[模板生成] 解析节点配置失败，跳过", "node", node.NodeName, "error", err)
-			continue
+			return nil, false
 		}
 		// 确保节点名称正确（使用数据库中的名称）
 		proxyConfig["name"] = node.NodeName
@@ -2113,9 +2379,82 @@ func (h *SubscriptionHandler) generateFromTemplate(ctx context.Context, username
 				proxyConfig["dialer-proxy"] = targetName
 			}
 		}
-		proxies = append(proxies, proxyConfig)
+		// 中转组：注入 dialer-proxy 指向中转代理组
+		if len(node.RelayGroupNodeIDs) > 0 && node.RelayGroupName != "" {
+			proxyConfig["dialer-proxy"] = node.RelayGroupName
+		}
+		return proxyConfig, true
 	}
-	logger.Info("[模板生成] 从节点表获取代理节点", "total", len(nodes), "enabled", len(proxies), "tag_filter", hasTagFilter)
+
+	// 将节点转换为 proxies 格式（[]map[string]any）
+	// inRootProxies 记录已写入根 proxies 的节点名，用于中转组底层节点去重补全
+	var proxies []map[string]any
+	inRootProxies := make(map[string]bool)
+	for _, node := range nodes {
+		if !node.Enabled {
+			continue // 跳过禁用的节点
+		}
+		// 标签过滤：只使用选中标签的节点
+		if hasTagFilter && !node.HasAnyTag(selectedTagsMap) {
+			continue
+		}
+		proxyConfig, ok := buildProxyConfig(node)
+		if !ok {
+			continue
+		}
+		proxies = append(proxies, proxyConfig)
+		inRootProxies[node.NodeName] = true
+	}
+
+	// 中转组：按组名去重，同名组只生成一个 proxy-group
+	// extraProxies 收集中转组引用、但未被标签过滤纳入主 proxies 的底层节点，
+	// 仅补入根 proxies 字段（不参与模板的普通/地区代理组展开）
+	relayGroupMap := make(map[string]map[string]any)
+	var extraProxies []map[string]any
+	for _, node := range nodes {
+		if !node.Enabled || len(node.RelayGroupNodeIDs) == 0 || node.RelayGroupName == "" {
+			continue
+		}
+		if hasTagFilter && !node.HasAnyTag(selectedTagsMap) {
+			continue
+		}
+		if _, exists := relayGroupMap[node.RelayGroupName]; exists {
+			continue
+		}
+		var groupProxies []string
+		for _, rid := range node.RelayGroupNodeIDs {
+			member, ok := nodeByID[rid]
+			if !ok || !member.Enabled {
+				// 底层节点已删除或被禁用：从中转组剔除，避免悬空引用
+				logger.Info("[模板生成] 中转组底层节点不可用，已剔除", "group", node.RelayGroupName, "node_id", rid)
+				continue
+			}
+			groupProxies = append(groupProxies, member.NodeName)
+			// 底层节点若未进入主 proxies（被标签过滤），补入根 proxies
+			if !inRootProxies[member.NodeName] {
+				if pc, ok := buildProxyConfig(member); ok {
+					extraProxies = append(extraProxies, pc)
+					inRootProxies[member.NodeName] = true
+				}
+			}
+		}
+		if len(groupProxies) > 0 {
+			relayGroupMap[node.RelayGroupName] = map[string]any{
+				"name":      node.RelayGroupName,
+				"type":      "url-test",
+				"proxies":   groupProxies,
+				"url":       "http://www.gstatic.com/generate_204",
+				"interval":  300,
+				"tolerance": 50,
+			}
+		}
+	}
+	var relayGroups []map[string]any
+	for _, rg := range relayGroupMap {
+		relayGroups = append(relayGroups, rg)
+	}
+
+	logger.Info("[模板生成] 从节点表获取代理节点", "total", len(nodes), "enabled", len(proxies), "tag_filter", hasTagFilter, "relay_groups", len(relayGroups))
 
 	// 3. 从代理集合表获取代理集合配置（用于 proxy-providers）
 	providerConfigs, err := h.repo.ListProxyProviderConfigs(ctx, nodeOwner)
@@ -2152,9 +2491,21 @@ func (h *SubscriptionHandler) generateFromTemplate(ctx context.Context, username
 	}
 
 	// 5. 注入代理节点到proxies字段（与预览保持一致）
-	result, err = injectProxiesIntoTemplate(result, proxies)
+	// 根 proxies 字段额外包含中转组引用的底层节点，确保中转代理组引用不悬空
+	rootProxies := make([]map[string]any, 0, len(proxies)+len(extraProxies))
+	rootProxies = append(rootProxies, proxies...)
+	rootProxies = append(rootProxies, extraProxies...)
+	result, err = injectProxiesIntoTemplate(result, rootProxies)
 	if err != nil {
 		return nil, fmt.Errorf("注入代理节点失败: %w", err)
+	}
+
+	// 6. 注入中转代理组到 proxy-groups
+	if len(relayGroups) > 0 {
+		result, err = injectRelayGroupsIntoTemplate(result, relayGroups)
+		if err != nil {
+			logger.Info("[模板生成] 注入中转代理组失败", "error", err)
+		}
 	}
 
 	logger.Info("[模板生成] 模板处理完成", "subscribe", subscribeFile.Name, "template", subscribeFile.TemplateFilename, "result_bytes", len(result))
@@ -2395,4 +2746,101 @@ func jsonWriteScalar(buf *bytes.Buffer, node *yaml.Node) {
 func jsonEncodeString(buf *bytes.Buffer, s string) {
 	b, _ := json.Marshal(s)
 	buf.Write(b)
+}
+
+// deduplicateProxies 对 Clash YAML 做兜底去重：
+// 1. proxies 列表中同名节点只保留第一个
+// 2. proxy-groups 中每个 group 的 proxies 列表去重
+func deduplicateProxies(data []byte, username string) []byte {
+	var config map[string]interface{}
+	if err := yaml.Unmarshal(data, &config); err != nil {
+		return data
+	}
+
+	changed := false
+
+	// 去重 proxies
+	if proxiesRaw, ok := config["proxies"]; ok {
+		if proxies, ok := proxiesRaw.([]interface{}); ok {
+			seen := make(map[string]bool)
+			deduped := make([]interface{}, 0, len(proxies))
+			for _, p := range proxies {
+				pm, ok := p.(map[string]interface{})
+				if !ok {
+					deduped = append(deduped, p)
+					continue
+				}
+				name, _ := pm["name"].(string)
+				if name == "" {
+					deduped = append(deduped, p)
+					continue
+				}
+				if seen[name] {
+					logger.Warn("[DEDUP] 移除重复节点",
+						"user", username,
+						"node", name,
+					)
+					changed = true
+					continue
+				}
+				seen[name] = true
+				deduped = append(deduped, p)
+			}
+			if changed {
+				config["proxies"] = deduped
+			}
+		}
+	}
+
+	// 去重 proxy-groups 中每个 group 的 proxies
+	if groupsRaw, ok := config["proxy-groups"]; ok {
+		if groups, ok := groupsRaw.([]interface{}); ok {
+			for _, g := range groups {
+				gm, ok := g.(map[string]interface{})
+				if !ok {
+					continue
+				}
+				groupName, _ := gm["name"].(string)
+				proxiesRaw, ok := gm["proxies"]
+				if !ok {
+					continue
+				}
+				proxies, ok := proxiesRaw.([]interface{})
+				if !ok {
+					continue
+				}
+				seen := make(map[string]bool)
+				deduped := make([]interface{}, 0, len(proxies))
+				for _, p := range proxies {
+					name, _ := p.(string)
+					if name == "" {
+						deduped = append(deduped, p)
+						continue
+					}
+					if seen[name] {
+						logger.Warn("[DEDUP] 移除 proxy-group 中重复引用",
+							"user", username,
+							"group", groupName,
+							"node", name,
+						)
+						changed = true
+						continue
+					}
+					seen[name] = true
+					deduped = append(deduped, p)
+				}
+				gm["proxies"] = deduped
+			}
+		}
+	}
+
+	if !changed {
+		return data
+	}
+
+	out, err := yaml.Marshal(config)
+	if err != nil {
+		return data
+	}
+	return out
 }

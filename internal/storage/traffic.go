@@ -217,9 +217,11 @@ type Node struct {
 	Tags             []string // 多标签支持
 	OriginalServer   string
 	ProbeServer      string // Probe server name for binding
-	ChainProxyNodeID *int64 // 链式代理目标节点 ID
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ChainProxyNodeID  *int64  // 链式代理目标节点 ID
+	RelayGroupName    string   // 中转组名称
+	RelayGroupNodeIDs []int64  // 中转组节点 ID 列表
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
 }
 
 // SubscribeFile represents a subscription file configuration.
@@ -236,7 +238,8 @@ type SubscribeFile struct {
 	SelectedCustomRuleIDs    []int64 // 选中的自定义规则 ID，为空且开启覆写时表示应用全部已启用规则
 	SelectedOverrideScriptIDs []int64 // 选中的覆写脚本 ID，为空且开启覆写时表示应用全部已启用脚本
 	TemplateFilename         string  // 绑定的 V3 模板文件名，为空表示未绑定模板
-	SelectedTags             []string // 选中的节点标签，为空表示使用所有节点
+	SelectedTags             []string // 选中的节点标签，为空表示使用所有节点(legacy,与 SelectedNodeIDs 二选一)
+	SelectedNodeIDs          []int64  // 选中的节点 ID,非空时优先于 SelectedTags 过滤
 	RawOutput           bool       // 非Clash配置，直接输出原始内容
 	SortOrder           int        // 排序权重，值越小越靠前
 	TrafficLimit        *float64   // 手动设置的总流量上限(GB)，nil表示跟随探针
@@ -261,6 +264,7 @@ type UserSettings struct {
 	EnableProxyProvider bool       // Enable proxy provider feature
 	NodeOrder           []int64    // Node display order (array of node IDs)
 	NodeNameFilter      string     // Regex pattern to filter out nodes by name during sync
+	AppendSubInfo       bool       // Append remaining traffic and days to node names during sync
 	DebugEnabled        bool       // Enable debug logging to file
 	DebugLogPath        string     // Path to current debug log file
 	DebugStartedAt      *time.Time // When debug logging was started
@@ -292,6 +296,19 @@ type SystemConfig struct {
 	NotifyDailyTraffic     bool
 	NotifyExpiry           bool
 	NotifyDailyTrafficTime string // "HH:MM" default "08:00"
+
+	// 安全配置
+	LoginRateMaxAttempts    int  `json:"login_rate_max_attempts"`
+	LoginRateWindow         int  `json:"login_rate_window"`
+	LoginRateLockDuration   int  `json:"login_rate_lock_duration"`
+	BruteForceEnabled       bool `json:"brute_force_enabled"`
+	BruteForceMaxFailures   int  `json:"brute_force_max_failures"`
+	BruteForceWindow        int  `json:"brute_force_window"`
+	BruteForceBlockDuration int  `json:"brute_force_block_duration"`
+	SubRateLimitEnabled     bool `json:"sub_rate_limit_enabled"`
+	SubRateLimitMax         int  `json:"sub_rate_limit_max"`
+	SubRateLimitWindow      int  `json:"sub_rate_limit_window"`
+	SkipLocalIP             bool `json:"skip_local_ip"`
 }
 
 // ExternalSubscription represents an external subscription URL imported by user.
@@ -689,9 +706,21 @@ CREATE INDEX IF NOT EXISTS idx_nodes_enabled ON nodes(enabled);
 	// Migrate legacy chain proxy nodes: extract dialer-proxy from clash_config into chain_proxy_node_id
 	r.migrateChainProxyNodes()
 
+	if err := r.ensureNodeColumn("relay_group_name", "TEXT"); err != nil {
+		return err
+	}
+	if err := r.ensureNodeColumn("relay_group_node_ids", "TEXT"); err != nil {
+		return err
+	}
+
 	// Create tag index after ensuring column exists
 	if _, err := r.db.Exec(`CREATE INDEX IF NOT EXISTS idx_nodes_tag ON nodes(tag);`); err != nil {
 		return fmt.Errorf("create tag index: %w", err)
+	}
+
+	// 节点"禁用"功能已弃用：启动时确保所有节点为启用，清理历史遗留/异常产生的 enabled=0。
+	if _, err := r.db.Exec(`UPDATE nodes SET enabled = 1 WHERE enabled = 0;`); err != nil {
+		return fmt.Errorf("enable all nodes: %w", err)
 	}
 
 	const subscribeFilesSchema = `
@@ -866,6 +895,11 @@ CREATE INDEX IF NOT EXISTS idx_external_subscriptions_url ON external_subscripti
 		return err
 	}
 
+	// Add append_sub_info to user_settings table (append traffic/days to node names)
+	if err := r.ensureUserSettingsColumn("append_sub_info", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+
 	// Add file_short_code column to subscribe_files table (3-character code)
 	if err := r.ensureSubscribeFileColumn("file_short_code", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
@@ -1015,6 +1049,25 @@ WHERE NOT EXISTS (SELECT 1 FROM system_config WHERE id = 1);
 		return err
 	}
 
+	// 安全配置
+	for _, col := range [][2]string{
+		{"login_rate_max_attempts", "INTEGER NOT NULL DEFAULT 5"},
+		{"login_rate_window", "INTEGER NOT NULL DEFAULT 60"},
+		{"login_rate_lock_duration", "INTEGER NOT NULL DEFAULT 60"},
+		{"brute_force_enabled", "INTEGER NOT NULL DEFAULT 1"},
+		{"brute_force_max_failures", "INTEGER NOT NULL DEFAULT 5"},
+		{"brute_force_window", "INTEGER NOT NULL DEFAULT 1440"},
+		{"brute_force_block_duration", "INTEGER NOT NULL DEFAULT 1440"},
+		{"sub_rate_limit_enabled", "INTEGER NOT NULL DEFAULT 1"},
+		{"sub_rate_limit_max", "INTEGER NOT NULL DEFAULT 30"},
+		{"sub_rate_limit_window", "INTEGER NOT NULL DEFAULT 120"},
+		{"skip_local_ip", "INTEGER NOT NULL DEFAULT 1"},
+	} {
+		if err := r.ensureSystemConfigColumn(col[0], col[1]); err != nil {
+			return err
+		}
+	}
+
 	const customRulesSchema = `
 CREATE TABLE IF NOT EXISTS custom_rules (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -1052,6 +1105,10 @@ CREATE INDEX IF NOT EXISTS idx_custom_rules_enabled ON custom_rules(enabled);
 
 	// 添加 selected_tags 字段，用于存储选中的节点标签（JSON 数组）
 	if err := r.ensureSubscribeFileColumn("selected_tags", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
+		return err
+	}
+	// 节点选择(取代 selected_tags 的精确粒度;非空 → 按 ID 过滤;空 → 回退 selected_tags 兼容老数据)
+	if err := r.ensureSubscribeFileColumn("selected_node_ids", "TEXT NOT NULL DEFAULT '[]'"); err != nil {
 		return err
 	}
 
@@ -1169,6 +1226,41 @@ CREATE INDEX IF NOT EXISTS idx_proxy_provider_configs_external_subscription_id O
 	// 添加 geo_ip_filter 列（为旧数据库迁移）
 	if err := r.ensureProxyProviderConfigColumn("geo_ip_filter", "TEXT"); err != nil {
 		return fmt.Errorf("ensure geo_ip_filter column: %w", err)
+	}
+
+	const speedTestResultsSchema = `
+CREATE TABLE IF NOT EXISTS speed_test_results (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    node_id INTEGER NOT NULL,
+    node_name TEXT NOT NULL,
+    source TEXT NOT NULL,
+    down_mbps REAL NOT NULL DEFAULT 0,
+    latency_ms INTEGER NOT NULL DEFAULT 0,
+    test_bytes INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'running',
+    error TEXT DEFAULT '',
+    egress_ip TEXT DEFAULT '',
+    tested_by TEXT NOT NULL,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_speed_test_node ON speed_test_results(node_id);
+`
+	if _, err := r.db.Exec(speedTestResultsSchema); err != nil {
+		return fmt.Errorf("migrate speed_test_results: %w", err)
+	}
+
+	const speedTestersSchema = `
+CREATE TABLE IF NOT EXISTS speed_testers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    token_hash TEXT NOT NULL UNIQUE,
+    created_by TEXT NOT NULL,
+    last_seen TIMESTAMP,
+    created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+`
+	if _, err := r.db.Exec(speedTestersSchema); err != nil {
+		return fmt.Errorf("migrate speed_testers: %w", err)
 	}
 
 	return nil
@@ -2247,7 +2339,13 @@ func generateFileShortCode() (string, error) {
 // generateUserShortCode generates a random 3-character string for user short codes.
 func generateUserShortCode() (string, error) {
 	const charset = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-	const length = 3
+
+	// 随机长度 3-10 位 + 不可由用户自定义,使短码不可枚举,消除自定义短码冲突可用性预言机。
+	lenByte := make([]byte, 1)
+	if _, err := rand.Read(lenByte); err != nil {
+		return "", fmt.Errorf("generate random length: %w", err)
+	}
+	length := 3 + int(lenByte[0])%8 // 3..10
 
 	bytes := make([]byte, length)
 	if _, err := rand.Read(bytes); err != nil {
@@ -3485,6 +3583,66 @@ func (r *TrafficRepository) SetUserSubscriptions(ctx context.Context, username s
 	return nil
 }
 
+// UserHasAccessToSubscribeFile checks if a user has access to a subscribe file.
+// Admin users have access to all files. Regular users only have access to assigned files.
+func (r *TrafficRepository) UserHasAccessToSubscribeFile(ctx context.Context, username string, subscribeFileID int64) (bool, error) {
+	if r == nil || r.db == nil {
+		return false, errors.New("traffic repository not initialized")
+	}
+
+	// Check if user is admin
+	user, err := r.GetUser(ctx, username)
+	if err == nil && user.Role == "admin" {
+		return true, nil
+	}
+
+	var count int
+	err = r.db.QueryRowContext(ctx,
+		`SELECT COUNT(1) FROM user_subscriptions WHERE username = ? AND subscription_id = ?`,
+		username, subscribeFileID).Scan(&count)
+	if err != nil {
+		return false, fmt.Errorf("check user subscription access: %w", err)
+	}
+	return count > 0, nil
+}
+
+// UserShortCodeInfo holds a user's short code information.
+type UserShortCodeInfo struct {
+	Username            string `json:"username"`
+	UserShortCode       string `json:"user_short_code"`
+	CustomUserShortCode string `json:"custom_user_short_code"`
+}
+
+// GetUsersBySubscriptionID returns all users assigned to a subscription file with their short codes.
+func (r *TrafficRepository) GetUsersBySubscriptionID(ctx context.Context, subscriptionID int64) ([]UserShortCodeInfo, error) {
+	if r == nil || r.db == nil {
+		return nil, errors.New("traffic repository not initialized")
+	}
+
+	const stmt = `
+		SELECT ut.username, COALESCE(ut.user_short_code, ''), COALESCE(ut.custom_user_short_code, '')
+		FROM user_subscriptions us
+		INNER JOIN user_tokens ut ON us.username = ut.username
+		WHERE us.subscription_id = ?
+		ORDER BY ut.username ASC
+	`
+	rows, err := r.db.QueryContext(ctx, stmt, subscriptionID)
+	if err != nil {
+		return nil, fmt.Errorf("get users by subscription ID: %w", err)
+	}
+	defer rows.Close()
+
+	var users []UserShortCodeInfo
+	for rows.Next() {
+		var u UserShortCodeInfo
+		if err := rows.Scan(&u.Username, &u.UserShortCode, &u.CustomUserShortCode); err != nil {
+			return nil, fmt.Errorf("scan user short code: %w", err)
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
 // GetUserSubscriptions returns all subscriptions assigned to a user.
 func (r *TrafficRepository) GetUserSubscriptions(ctx context.Context, username string) ([]SubscribeFile, error) {
 	if r == nil || r.db == nil {
@@ -3543,11 +3701,11 @@ func (r *TrafficRepository) GetUserSettings(ctx context.Context, username string
 		return settings, errors.New("username is required")
 	}
 
-	const stmt = `SELECT username, force_sync_external, COALESCE(match_rule, 'node_name'), COALESCE(sync_scope, 'saved_only'), COALESCE(keep_node_name, 1), COALESCE(cache_expire_minutes, 0), COALESCE(sync_traffic, 0), COALESCE(enable_probe_binding, 0), COALESCE(custom_rules_enabled, 0), COALESCE(template_version, 'v2'), COALESCE(enable_proxy_provider, 0), COALESCE(node_order, '[]'), COALESCE(node_name_filter, '剩余|流量|到期|订阅|时间|重置'), COALESCE(debug_enabled, 0), COALESCE(debug_log_path, ''), debug_started_at, created_at, updated_at FROM user_settings WHERE username = ? LIMIT 1`
-	var forceSyncInt, keepNodeNameInt, syncTrafficInt, enableProbeBindingInt, customRulesEnabledInt, enableProxyProviderInt, debugEnabledInt int
+	const stmt = `SELECT username, force_sync_external, COALESCE(match_rule, 'node_name'), COALESCE(sync_scope, 'saved_only'), COALESCE(keep_node_name, 1), COALESCE(cache_expire_minutes, 0), COALESCE(sync_traffic, 0), COALESCE(enable_probe_binding, 0), COALESCE(custom_rules_enabled, 0), COALESCE(template_version, 'v2'), COALESCE(enable_proxy_provider, 0), COALESCE(node_order, '[]'), COALESCE(node_name_filter, '剩余|流量|到期|订阅|时间|重置'), COALESCE(append_sub_info, 0), COALESCE(debug_enabled, 0), COALESCE(debug_log_path, ''), debug_started_at, created_at, updated_at FROM user_settings WHERE username = ? LIMIT 1`
+	var forceSyncInt, keepNodeNameInt, syncTrafficInt, enableProbeBindingInt, customRulesEnabledInt, enableProxyProviderInt, appendSubInfoInt, debugEnabledInt int
 	var nodeOrderJSON string
 	var debugStartedAt sql.NullTime
-	err := r.db.QueryRowContext(ctx, stmt, username).Scan(&settings.Username, &forceSyncInt, &settings.MatchRule, &settings.SyncScope, &keepNodeNameInt, &settings.CacheExpireMinutes, &syncTrafficInt, &enableProbeBindingInt, &customRulesEnabledInt, &settings.TemplateVersion, &enableProxyProviderInt, &nodeOrderJSON, &settings.NodeNameFilter, &debugEnabledInt, &settings.DebugLogPath, &debugStartedAt, &settings.CreatedAt, &settings.UpdatedAt)
+	err := r.db.QueryRowContext(ctx, stmt, username).Scan(&settings.Username, &forceSyncInt, &settings.MatchRule, &settings.SyncScope, &keepNodeNameInt, &settings.CacheExpireMinutes, &syncTrafficInt, &enableProbeBindingInt, &customRulesEnabledInt, &settings.TemplateVersion, &enableProxyProviderInt, &nodeOrderJSON, &settings.NodeNameFilter, &appendSubInfoInt, &debugEnabledInt, &settings.DebugLogPath, &debugStartedAt, &settings.CreatedAt, &settings.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return settings, ErrUserSettingsNotFound
@@ -3561,6 +3719,7 @@ func (r *TrafficRepository) GetUserSettings(ctx context.Context, username string
 	settings.EnableProbeBinding = enableProbeBindingInt == 1
 	settings.CustomRulesEnabled = customRulesEnabledInt == 1
 	settings.EnableProxyProvider = enableProxyProviderInt == 1
+	settings.AppendSubInfo = appendSubInfoInt == 1
 	settings.DebugEnabled = debugEnabledInt == 1
 
 	// Parse node_order JSON
@@ -3663,9 +3822,14 @@ func (r *TrafficRepository) UpsertUserSettings(ctx context.Context, settings Use
 		nodeNameFilter = "剩余|流量|到期|订阅|时间|重置"
 	}
 
+	appendSubInfoInt := 0
+	if settings.AppendSubInfo {
+		appendSubInfoInt = 1
+	}
+
 	const stmt = `
-		INSERT INTO user_settings (username, force_sync_external, match_rule, sync_scope, keep_node_name, cache_expire_minutes, sync_traffic, enable_probe_binding, custom_rules_enabled, template_version, enable_proxy_provider, node_order, node_name_filter, debug_enabled, debug_log_path, debug_started_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		INSERT INTO user_settings (username, force_sync_external, match_rule, sync_scope, keep_node_name, cache_expire_minutes, sync_traffic, enable_probe_binding, custom_rules_enabled, template_version, enable_proxy_provider, node_order, node_name_filter, append_sub_info, debug_enabled, debug_log_path, debug_started_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
 		ON CONFLICT(username) DO UPDATE SET
 			force_sync_external = excluded.force_sync_external,
 			match_rule = excluded.match_rule,
@@ -3679,13 +3843,14 @@ func (r *TrafficRepository) UpsertUserSettings(ctx context.Context, settings Use
 			enable_proxy_provider = excluded.enable_proxy_provider,
 			node_order = excluded.node_order,
 			node_name_filter = excluded.node_name_filter,
+			append_sub_info = excluded.append_sub_info,
 			debug_enabled = excluded.debug_enabled,
 			debug_log_path = excluded.debug_log_path,
 			debug_started_at = excluded.debug_started_at,
 			updated_at = CURRENT_TIMESTAMP
 	`
 
-	if _, err := r.db.ExecContext(ctx, stmt, username, forceSyncInt, matchRule, syncScope, keepNodeNameInt, cacheExpireMinutes, syncTrafficInt, enableProbeBindingInt, customRulesEnabledInt, templateVersion, enableProxyProviderInt, nodeOrderJSON, nodeNameFilter, debugEnabledInt, settings.DebugLogPath, settings.DebugStartedAt); err != nil {
+	if _, err := r.db.ExecContext(ctx, stmt, username, forceSyncInt, matchRule, syncScope, keepNodeNameInt, cacheExpireMinutes, syncTrafficInt, enableProbeBindingInt, customRulesEnabledInt, templateVersion, enableProxyProviderInt, nodeOrderJSON, nodeNameFilter, appendSubInfoInt, debugEnabledInt, settings.DebugLogPath, settings.DebugStartedAt); err != nil {
 		return fmt.Errorf("upsert user settings: %w", err)
 	}
 
@@ -4603,7 +4768,11 @@ SELECT proxy_groups_source_url, client_compatibility_mode, silent_mode, silent_m
        COALESCE(notify_enabled, 0), COALESCE(telegram_bot_token, ''), COALESCE(telegram_chat_id, ''),
        COALESCE(notify_subscribe_fetch, 1), COALESCE(notify_login, 1), COALESCE(notify_ip_ban, 1),
        COALESCE(notify_silent_mode, 1), COALESCE(notify_daily_traffic, 0), COALESCE(notify_expiry, 1),
-       COALESCE(notify_daily_traffic_time, '08:00')
+       COALESCE(notify_daily_traffic_time, '08:00'),
+       COALESCE(login_rate_max_attempts, 5), COALESCE(login_rate_window, 60), COALESCE(login_rate_lock_duration, 60),
+       COALESCE(brute_force_enabled, 1), COALESCE(brute_force_max_failures, 5), COALESCE(brute_force_window, 1440), COALESCE(brute_force_block_duration, 1440),
+       COALESCE(sub_rate_limit_enabled, 1), COALESCE(sub_rate_limit_max, 30), COALESCE(sub_rate_limit_window, 120),
+       COALESCE(skip_local_ip, 1)
 FROM system_config
 WHERE id = 1
 `
@@ -4613,6 +4782,7 @@ WHERE id = 1
 	var enableShortLinkInt, enableSubTrafficHeaderInt, enableOverrideScriptsInt int
 	var notifyEnabledInt, notifySubFetchInt, notifyLoginInt, notifyIPBanInt int
 	var notifySilentModeInt, notifyDailyTrafficInt, notifyExpiryInt int
+	var bruteForceEnabledInt, subRateLimitEnabledInt, skipLocalIPInt int
 	err := r.db.QueryRowContext(ctx, query).Scan(
 		&cfg.ProxyGroupsSourceURL, &compatibilityMode, &silentMode, &silentModeTimeout,
 		&enableSubInfoNodes, &cfg.SubInfoExpirePrefix, &cfg.SubInfoTrafficPrefix,
@@ -4622,6 +4792,10 @@ WHERE id = 1
 		&notifySubFetchInt, &notifyLoginInt, &notifyIPBanInt,
 		&notifySilentModeInt, &notifyDailyTrafficInt, &notifyExpiryInt,
 		&cfg.NotifyDailyTrafficTime,
+		&cfg.LoginRateMaxAttempts, &cfg.LoginRateWindow, &cfg.LoginRateLockDuration,
+		&bruteForceEnabledInt, &cfg.BruteForceMaxFailures, &cfg.BruteForceWindow, &cfg.BruteForceBlockDuration,
+		&subRateLimitEnabledInt, &cfg.SubRateLimitMax, &cfg.SubRateLimitWindow,
+		&skipLocalIPInt,
 	)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -4633,6 +4807,17 @@ WHERE id = 1
 				EnableSubTrafficHeader:   true,
 				SubscriptionOutputFormat: "yaml",
 				NotifyDailyTrafficTime:   "08:00",
+				LoginRateMaxAttempts:     5,
+				LoginRateWindow:          60,
+				LoginRateLockDuration:    60,
+				BruteForceEnabled:        true,
+				BruteForceMaxFailures:    5,
+				BruteForceWindow:         1440,
+				BruteForceBlockDuration:  1440,
+				SubRateLimitEnabled:      true,
+				SubRateLimitMax:          30,
+				SubRateLimitWindow:       120,
+				SkipLocalIP:             true,
 			}, nil
 		}
 		return SystemConfig{}, fmt.Errorf("query system config: %w", err)
@@ -4667,6 +4852,33 @@ WHERE id = 1
 	if cfg.SubscriptionOutputFormat == "" {
 		cfg.SubscriptionOutputFormat = "yaml"
 	}
+	cfg.BruteForceEnabled = bruteForceEnabledInt != 0
+	cfg.SubRateLimitEnabled = subRateLimitEnabledInt != 0
+	cfg.SkipLocalIP = skipLocalIPInt != 0
+	if cfg.LoginRateMaxAttempts <= 0 {
+		cfg.LoginRateMaxAttempts = 5
+	}
+	if cfg.LoginRateWindow <= 0 {
+		cfg.LoginRateWindow = 60
+	}
+	if cfg.LoginRateLockDuration <= 0 {
+		cfg.LoginRateLockDuration = 60
+	}
+	if cfg.BruteForceMaxFailures <= 0 {
+		cfg.BruteForceMaxFailures = 5
+	}
+	if cfg.BruteForceWindow <= 0 {
+		cfg.BruteForceWindow = 1440
+	}
+	if cfg.BruteForceBlockDuration <= 0 {
+		cfg.BruteForceBlockDuration = 1440
+	}
+	if cfg.SubRateLimitMax <= 0 {
+		cfg.SubRateLimitMax = 30
+	}
+	if cfg.SubRateLimitWindow <= 0 {
+		cfg.SubRateLimitWindow = 120
+	}
 	return cfg, nil
 }
 
@@ -4696,6 +4908,17 @@ SET proxy_groups_source_url = ?,
     notify_daily_traffic = ?,
     notify_expiry = ?,
     notify_daily_traffic_time = ?,
+    login_rate_max_attempts = ?,
+    login_rate_window = ?,
+    login_rate_lock_duration = ?,
+    brute_force_enabled = ?,
+    brute_force_max_failures = ?,
+    brute_force_window = ?,
+    brute_force_block_duration = ?,
+    sub_rate_limit_enabled = ?,
+    sub_rate_limit_max = ?,
+    sub_rate_limit_window = ?,
+    skip_local_ip = ?,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = 1
 `
@@ -4738,6 +4961,10 @@ WHERE id = 1
 		boolToInt(cfg.NotifySubscribeFetch), boolToInt(cfg.NotifyLogin), boolToInt(cfg.NotifyIPBan),
 		boolToInt(cfg.NotifySilentMode), boolToInt(cfg.NotifyDailyTraffic), boolToInt(cfg.NotifyExpiry),
 		dailyTrafficTime,
+		cfg.LoginRateMaxAttempts, cfg.LoginRateWindow, cfg.LoginRateLockDuration,
+		boolToInt(cfg.BruteForceEnabled), cfg.BruteForceMaxFailures, cfg.BruteForceWindow, cfg.BruteForceBlockDuration,
+		boolToInt(cfg.SubRateLimitEnabled), cfg.SubRateLimitMax, cfg.SubRateLimitWindow,
+		boolToInt(cfg.SkipLocalIP),
 	)
 	if err != nil {
 		return fmt.Errorf("update system config: %w", err)
