@@ -17,3 +17,4 @@
 |---|---|---|---|---|
 | 2026-06-27 | docs | hjs-feature/hjsmaster 分支模型与维护指南 | `docs/` | 否 |
 | 2026-06-27 | chore | 合并 upstream v0.8.2；Dockerfile golang 1.26 | `fork/docker/`、`internal/` | 是 |
+| 2026-06-27 | docs | hjsmaster 默认分支说明、verge kit 边界、部署回顾交叉引用 | `docs/维护指南.md` | 否 |
