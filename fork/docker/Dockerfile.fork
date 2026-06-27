@@ -10,7 +10,7 @@ COPY miaomiaowu/ ./
 COPY .env.example .env
 RUN npx vite build --config vite.config.fork.mts
 
-FROM golang:1.24-bookworm AS backend-builder
+FROM golang:1.26-bookworm AS backend-builder
 
 ARG TARGETOS
 ARG TARGETARCH
