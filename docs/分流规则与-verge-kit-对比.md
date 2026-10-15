@@ -1,6 +1,8 @@
 # 分流规则：妙妙屋 / Sublink / Verge Kit
 
-本文与 Sublink 仓库 [`分流规则与-verge-kit-对比.md`](https://github.com/HouJia/sublink-worker/blob/hjsmaster/docs/分流规则与-verge-kit-对比.md) **内容同步**；真值源维护在 sublink-worker，妙妙屋侧仅交叉引用。
+> 2026-10-15 分支改名：`hjsmaster` → `hubery/main`，`hjs-feature` → `hubery/dev`，本文已同步替换。上游分支只读；本仓库不保留自己的 main/master。
+
+本文与 Sublink 仓库 [`分流规则与-verge-kit-对比.md`](https://github.com/HouJia/sublink-worker/blob/hubery/main/docs/分流规则与-verge-kit-对比.md) **内容同步**；真值源维护在 sublink-worker，妙妙屋侧仅交叉引用。
 
 | 项目 | 内容 |
 |---|---|
@@ -19,4 +21,4 @@
 - **Sublink**：GeoSite 类别轻量套餐，单人 `/subconverter` 片段。
 - **妙妙屋**：同源类别 + 多用户订阅文件。
 
-详见：[sublink-worker/docs/分流规则与-verge-kit-对比.md](https://github.com/HouJia/sublink-worker/blob/hjsmaster/docs/分流规则与-verge-kit-对比.md)
+详见：[sublink-worker/docs/分流规则与-verge-kit-对比.md](https://github.com/HouJia/sublink-worker/blob/hubery/main/docs/分流规则与-verge-kit-对比.md)
